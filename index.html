@@ -4,13 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MangaEasyTranslator</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;600;700;900&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;900&family=Anton&family=Oswald:wght@400;700&family=Permanent+Marker&family=Bebas+Neue&family=Comic+Neue:wght@700&family=Noto+Sans+JP&display=swap" rel="stylesheet" />
+
+  <!--
+    Tesseract.js v4.x via CDN clássico (não ESM).
+    v4 usa: createWorker() → loadLanguage() → initialize()
+    v5 mudou a API novamente, por isso fixamos em v4.1.4 que é estável.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
+
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-<!-- HEADER -->
 <header class="site-header">
   <div class="header-inner">
     <div class="logo">
@@ -18,13 +26,12 @@
       <span class="logo-text">Manga<span class="accent">Easy</span>Translator</span>
     </div>
     <div class="header-actions">
-      <button id="btn-new" class="btn btn-ghost" title="Nova imagem">↺ Nova Imagem</button>
-      <button id="btn-export" class="btn btn-primary" disabled title="Exportar imagem final">⬇ Exportar</button>
+      <button id="btn-new" class="btn btn-ghost" title="Carregar nova imagem">↺ Nova</button>
+      <button id="btn-export" class="btn btn-primary" disabled title="Exportar imagem final">⬇ Exportar PNG</button>
     </div>
   </div>
 </header>
 
-<!-- STEP INDICATOR -->
 <div class="steps-bar">
   <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-label">Upload</span></div>
   <div class="step-sep">›</div>
@@ -37,29 +44,31 @@
   <div class="step" data-step="5"><span class="step-num">5</span><span class="step-label">Exportar</span></div>
 </div>
 
-<!-- MAIN APP -->
 <main class="app-layout">
 
-  <!-- LEFT: TOOLS PANEL -->
-  <aside class="panel panel-tools" id="tools-panel">
-    <section class="tool-section" id="section-ocr">
+  <!-- ═══════════════════════════════════════════
+       LEFT PANEL — TOOLS
+  ═══════════════════════════════════════════ -->
+  <aside class="panel panel-left" id="panel-left">
+
+    <!-- OCR -->
+    <section class="tool-section">
       <h3 class="tool-title">🔍 OCR</h3>
       <div class="tool-group">
         <label class="tool-label">Idioma de origem</label>
         <select id="ocr-lang" class="tool-select">
           <option value="jpn">Japonês</option>
           <option value="eng">Inglês</option>
-          <option value="chi_sim">Chinês Simplificado</option>
+          <option value="chi_sim">Chinês Simpl.</option>
           <option value="kor">Coreano</option>
         </select>
       </div>
-      <button id="btn-run-ocr" class="btn btn-accent btn-full" disabled>
-        <span class="btn-icon">🔍</span> Detectar Texto
-      </button>
+      <button id="btn-run-ocr" class="btn btn-accent w-full" disabled>🔍 Detectar Texto</button>
       <div id="ocr-status" class="status-box hidden"></div>
     </section>
 
-    <section class="tool-section" id="section-translate">
+    <!-- TRADUÇÃO -->
+    <section class="tool-section">
       <h3 class="tool-title">🌐 Tradução</h3>
       <div class="tool-group">
         <label class="tool-label">Idioma destino</label>
@@ -70,146 +79,172 @@
           <option value="fr">Francês</option>
         </select>
       </div>
-      <button id="btn-translate-all" class="btn btn-accent btn-full" disabled>
-        <span class="btn-icon">🌐</span> Traduzir Tudo
-      </button>
+      <button id="btn-translate-all" class="btn btn-accent w-full" disabled>🌐 Traduzir Tudo</button>
       <div id="trans-status" class="status-box hidden"></div>
     </section>
 
-    <section class="tool-section" id="section-brush">
-      <h3 class="tool-title">🖌 Pincel de Apagar</h3>
-      <div class="tool-group">
-        <label class="tool-label">Modo</label>
-        <div class="btn-group">
-          <button class="btn btn-tool active" id="brush-white" data-mode="white">Branco</button>
-          <button class="btn btn-tool" id="brush-blur" data-mode="blur">Blur</button>
-          <button class="btn btn-tool" id="brush-clone" data-mode="clone">Clone</button>
-        </div>
+    <!-- FERRAMENTAS DE DESENHO -->
+    <section class="tool-section">
+      <h3 class="tool-title">🛠 Ferramentas</h3>
+      <div class="tool-grid">
+        <button class="tool-btn" data-tool="brush"     title="Pincel (B)">🖌 Pincel</button>
+        <button class="tool-btn" data-tool="eraser"    title="Borracha (E)">⬜ Borracha</button>
+        <button class="tool-btn" data-tool="blur"      title="Blur (U)">💧 Blur</button>
+        <button class="tool-btn" data-tool="fill"      title="Preenchimento (F)">🪣 Fill</button>
+        <button class="tool-btn" data-tool="clone"     title="Clone Stamp (C)">🔁 Clone</button>
+        <button class="tool-btn" data-tool="selection" title="Seleção Retang. (S)">⬡ Seleção</button>
       </div>
-      <div class="tool-group">
-        <label class="tool-label">Tamanho: <span id="brush-size-val">20</span>px</label>
-        <input type="range" id="brush-size" min="5" max="80" value="20" class="tool-range" />
+      <div id="tool-options" class="tool-options">
+        <!-- Populated by JS based on active tool -->
       </div>
-      <div class="tool-group">
-        <label class="tool-label">Cor de fundo</label>
-        <input type="color" id="brush-color" value="#ffffff" class="tool-color" />
-      </div>
-      <div class="btn-group" style="margin-top:8px">
-        <button id="btn-brush-tool" class="btn btn-tool" data-active="false">✏ Ativar Pincel</button>
-        <button id="btn-undo" class="btn btn-tool">↩ Desfazer</button>
+      <div class="btn-row" style="margin-top:6px">
+        <button id="btn-undo" class="btn btn-sm">↩ Desfazer</button>
+        <button id="btn-redo" class="btn btn-sm">↪ Refazer</button>
+        <button id="btn-clear-sel" class="btn btn-sm hidden">✕ Sel.</button>
       </div>
     </section>
 
-    <section class="tool-section" id="section-text">
-      <h3 class="tool-title">📝 Texto</h3>
+    <!-- ZOOM -->
+    <section class="tool-section">
+      <h3 class="tool-title">🔭 Visualização</h3>
       <div class="tool-group">
-        <label class="tool-label">Adicionar texto</label>
-        <input type="text" id="new-text-input" class="tool-input" placeholder="Digite o texto..." />
+        <label class="tool-label">Zoom: <span id="zoom-val">100</span>%</label>
+        <input type="range" id="zoom-range" min="10" max="400" value="100" class="tool-range" />
       </div>
-      <div class="tool-group row">
-        <div>
+      <div class="btn-row">
+        <button id="btn-fit"        class="btn btn-sm">⊡ Ajustar</button>
+        <button id="btn-zoom-reset" class="btn btn-sm">1:1</button>
+      </div>
+      <p class="tip-text">🖱 Scroll=zoom · Drag=mover<br>Botão do meio / Alt+drag = pan</p>
+    </section>
+
+    <!-- TEXTO MANUAL -->
+    <section class="tool-section">
+      <h3 class="tool-title">✏ Texto Manual</h3>
+      <input type="text" id="new-text-input" class="tool-input" placeholder="Digite e adicione..." />
+      <button id="btn-add-text" class="btn btn-accent w-full" disabled>+ Adicionar ao Canvas</button>
+    </section>
+
+    <!-- EDITAR CAIXA SELECIONADA -->
+    <section class="tool-section" id="box-editor" style="display:none">
+      <h3 class="tool-title">📦 Editar Caixa</h3>
+      <div class="tool-group">
+        <label class="tool-label">Texto</label>
+        <textarea id="box-text" class="tool-input" rows="3" placeholder="Texto traduzido..."></textarea>
+      </div>
+      <div class="tool-row">
+        <div class="tool-group flex-1">
           <label class="tool-label">Fonte</label>
-          <select id="font-family" class="tool-select small">
+          <select id="box-font-family" class="tool-select">
             <option value="Bangers">Bangers</option>
+            <option value="Anton">Anton</option>
+            <option value="Oswald">Oswald</option>
+            <option value="Bebas Neue">Bebas Neue</option>
+            <option value="Permanent Marker">P.Marker</option>
+            <option value="Comic Neue">Comic Neue</option>
             <option value="Nunito">Nunito</option>
             <option value="Arial">Arial</option>
-            <option value="Comic Sans MS">Comic Sans</option>
-            <option value="Impact">Impact</option>
           </select>
         </div>
-        <div>
-          <label class="tool-label">Tamanho</label>
-          <input type="number" id="font-size" value="18" min="8" max="120" class="tool-input small" />
+        <div class="tool-group" style="width:56px">
+          <label class="tool-label">Tam.</label>
+          <input type="number" id="box-font-size" class="tool-input" value="18" min="6" max="120" />
         </div>
       </div>
-      <div class="tool-group row">
-        <div>
+      <div class="tool-row">
+        <div class="tool-group">
           <label class="tool-label">Cor texto</label>
-          <input type="color" id="text-color" value="#000000" class="tool-color" />
+          <input type="color" id="box-color" value="#000000" class="tool-color" />
         </div>
-        <div>
+        <div class="tool-group">
           <label class="tool-label">Fundo</label>
-          <input type="color" id="text-bg" value="#ffffff" class="tool-color" />
+          <input type="color" id="box-bg" value="#ffffff" class="tool-color" />
         </div>
-        <div>
-          <label class="tool-label">Opacidade bg</label>
-          <input type="range" id="text-bg-opacity" min="0" max="1" step="0.05" value="0.85" class="tool-range" style="width:60px" />
+        <div class="tool-group flex-1">
+          <label class="tool-label">Opac. <span id="box-opacity-val">90</span>%</label>
+          <input type="range" id="box-opacity" min="0" max="100" value="90" class="tool-range" />
         </div>
       </div>
       <div class="tool-group">
         <label class="tool-label">Alinhamento</label>
-        <div class="btn-group">
-          <button class="btn btn-tool active" data-align="left">⬅</button>
-          <button class="btn btn-tool" data-align="center">↔</button>
-          <button class="btn btn-tool" data-align="right">➡</button>
+        <div class="btn-row">
+          <button class="btn btn-sm align-btn" data-align="left">⬅ Esq</button>
+          <button class="btn btn-sm align-btn active" data-align="center">↔ Cen</button>
+          <button class="btn btn-sm align-btn" data-align="right">➡ Dir</button>
         </div>
       </div>
-      <button id="btn-add-text" class="btn btn-accent btn-full" disabled>
-        + Adicionar ao Canvas
-      </button>
+      <div class="tool-group">
+        <label class="tool-label">Rotação: <span id="box-rotation-val">0</span>°</label>
+        <input type="range" id="box-rotation" min="-180" max="180" value="0" class="tool-range" />
+      </div>
+      <button id="btn-delete-box" class="btn btn-danger w-full">🗑 Remover Caixa</button>
     </section>
 
-    <section class="tool-section" id="section-canvas-ctrl">
-      <h3 class="tool-title">🔭 Visualização</h3>
-      <div class="tool-group">
-        <label class="tool-label">Zoom: <span id="zoom-val">100</span>%</label>
-        <input type="range" id="zoom-range" min="20" max="300" value="100" class="tool-range" />
-      </div>
-      <div class="btn-group">
-        <button id="btn-fit" class="btn btn-tool">⊡ Ajustar</button>
-        <button id="btn-zoom-reset" class="btn btn-tool">100%</button>
-      </div>
-    </section>
   </aside>
 
-  <!-- CENTER: CANVAS AREA -->
-  <div class="canvas-container" id="canvas-container">
-    <!-- Upload drop zone -->
+  <!-- ═══════════════════════════════════════════
+       CENTER — CANVAS AREA
+  ═══════════════════════════════════════════ -->
+  <div class="canvas-viewport" id="canvas-viewport">
+
+    <!-- Drop zone (visible before image loaded) -->
     <div class="drop-zone" id="drop-zone">
       <div class="drop-content">
-        <div class="drop-icon">📄</div>
-        <p class="drop-title">Arraste uma página de mangá aqui</p>
+        <div class="drop-icon">🗒️</div>
+        <p class="drop-title">Arraste uma página de mangá</p>
         <p class="drop-sub">ou clique para selecionar</p>
-        <button class="btn btn-primary btn-lg">Selecionar Imagem</button>
-        <p class="drop-hint">Suporte: JPG, PNG, WebP</p>
+        <button class="btn btn-primary btn-lg" id="btn-select-file">Selecionar Imagem</button>
+        <p class="drop-hint">JPG · PNG · WebP</p>
       </div>
       <input type="file" id="file-input" accept="image/*" style="display:none" />
     </div>
 
-    <!-- Canvas wrapper (hidden until image loaded) -->
-    <div class="canvas-wrapper hidden" id="canvas-wrapper">
-      <canvas id="base-canvas"></canvas>
-      <canvas id="overlay-canvas"></canvas>
-      <div id="text-layer"></div>
-    </div>
-
-    <!-- Loading overlay -->
-    <div class="loading-overlay hidden" id="loading-overlay">
-      <div class="loading-card">
-        <div class="spinner"></div>
-        <p id="loading-msg">Processando...</p>
-        <div class="progress-bar"><div id="progress-fill"></div></div>
+    <!-- Stage: captures events, never scrolls -->
+    <div class="canvas-stage" id="canvas-stage" style="display:none">
+      <!-- World: moves with pan+zoom via CSS transform -->
+      <div class="canvas-world" id="canvas-world">
+        <!-- Layer 0: base image + brush strokes -->
+        <canvas id="base-canvas"></canvas>
+        <!-- Layer 1: selection rectangle -->
+        <canvas id="selection-canvas"></canvas>
+        <!-- Layer 2: OCR bounding boxes (non-destructive) -->
+        <canvas id="overlay-canvas"></canvas>
+        <!-- Layer 3: live preview of text boxes rendered to canvas -->
+        <canvas id="preview-canvas"></canvas>
+        <!-- Layer 4: DOM text boxes for interactive editing -->
+        <div id="text-layer"></div>
       </div>
     </div>
+
+    <!-- Spinner overlay -->
+    <div class="loading-overlay" id="loading-overlay" style="display:none">
+      <div class="loading-card">
+        <div class="spinner"></div>
+        <p id="loading-msg">Processando…</p>
+        <div class="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
+        <p id="loading-sub" class="loading-sub"></p>
+      </div>
+    </div>
+
   </div>
 
-  <!-- RIGHT: TEXT BLOCKS PANEL -->
-  <aside class="panel panel-blocks" id="blocks-panel">
+  <!-- ═══════════════════════════════════════════
+       RIGHT PANEL — BLOCKS
+  ═══════════════════════════════════════════ -->
+  <aside class="panel panel-right" id="panel-right">
     <div class="panel-header">
       <h3 class="tool-title">📋 Blocos de Texto</h3>
       <span class="badge" id="block-count">0</span>
     </div>
     <div id="blocks-list" class="blocks-list">
-      <p class="empty-hint">Nenhum texto detectado ainda.</p>
+      <p class="empty-hint">Faça upload e rode o OCR para ver os blocos aqui.</p>
     </div>
   </aside>
 
 </main>
 
-<!-- TOAST NOTIFICATION -->
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast"></div>
 
-<!-- SCRIPTS -->
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

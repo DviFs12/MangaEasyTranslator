@@ -1,356 +1,462 @@
 /**
- * app.js — Módulo principal. Orquestra todos os módulos.
+ * app.js — Orquestrador principal v3
+ *
+ * Fluxo:
+ *  Upload → OCR → Tradução → Edição (ferramentas + caixas) → Exportar
  */
 
-import { runOCR } from './ocr.js';
-import { translateText, translateBatch } from './translate.js';
+import { runOCR }            from './ocr.js';
+import { translateBatch }    from './translate.js';
 import { CanvasEditor } from './editor.js';
-import { TextManager } from './textManager.js';
+import { TextManager }       from './textManager.js';
+import { pickFont, pickFontSize, FONTS } from './fontManager.js';
 import {
-  showToast, showLoading, updateLoading, hideLoading,
-  setStep, setStatus, hideStatus,
-  renderBlocksList, updateBlockCard, highlightBlockCard
+  toast, showLoading, updateLoading, hideLoading,
+  setStep, setStatus, clearStatus,
+  renderBlocks, updateBlockCard, highlightBlock,
 } from './ui.js';
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
+// DOM
+// ═══════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+
+const dropZone   = $('drop-zone');
+const fileInput  = $('file-input');
+const stage      = $('canvas-stage');
+const world      = $('canvas-world');
+const baseCanvas = $('base-canvas');
+const selCanvas  = $('selection-canvas');
+const ovrCanvas  = $('overlay-canvas');
+const prvCanvas  = $('preview-canvas');
+const textLayer  = $('text-layer');
+
+// Buttons
+const btnRunOCR      = $('btn-run-ocr');
+const btnTranslate   = $('btn-translate-all');
+const btnExport      = $('btn-export');
+const btnNew         = $('btn-new');
+const btnAddText     = $('btn-add-text');
+const btnUndo        = $('btn-undo');
+const btnRedo        = $('btn-redo');
+const btnClearSel    = $('btn-clear-sel');
+const btnFit         = $('btn-fit');
+const btnZoomReset   = $('btn-zoom-reset');
+const btnDeleteBox   = $('btn-delete-box');
+const btnSelectFile  = $('btn-select-file');
+
+// Tool buttons
+const toolBtns = document.querySelectorAll('.tool-btn[data-tool]');
+
+// Inputs
+const ocrLang   = $('ocr-lang');
+const transLang = $('trans-lang');
+const zoomRange = $('zoom-range');
+const zoomVal   = $('zoom-val');
+const newTextIn = $('new-text-input');
+
+// Box editor
+const boxEditor    = $('box-editor');
+const boxText      = $('box-text');
+const boxFontFam   = $('box-font-family');
+const boxFontSize  = $('box-font-size');
+const boxColor     = $('box-color');
+const boxBg        = $('box-bg');
+const boxOpacity   = $('box-opacity');
+const boxOpacityV  = $('box-opacity-val');
+const boxRotation  = $('box-rotation');
+const boxRotationV = $('box-rotation-val');
+const alignBtns    = document.querySelectorAll('.align-btn');
+
+// Populate font select from catalog
+if (boxFontFam) {
+  boxFontFam.innerHTML = FONTS.map(f => `<option value="${f.name}">${f.label}</option>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // STATE
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 const state = {
-  image: null,           // HTMLImageElement
-  blocks: [],            // Array<OCRBlock>
-  selectedBlockId: null,
-  zoom: 1,
-  brushActive: false,
+  image:        null,
+  blocks:       [],
+  selectedBlock: null,
 };
 
-// ============================================================
-// DOM REFS
-// ============================================================
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
-const canvasWrapper = document.getElementById('canvas-wrapper');
-const baseCanvas = document.getElementById('base-canvas');
-const overlayCanvas = document.getElementById('overlay-canvas');
-const textLayer = document.getElementById('text-layer');
+// ═══════════════════════════════════════════════════════════════
+// MODULES
+// ═══════════════════════════════════════════════════════════════
+const editor = new CanvasEditor({
+  stage, world,
+  base:      baseCanvas,
+  selection: selCanvas,
+  overlay:   ovrCanvas,
+});
 
-const btnRunOCR = document.getElementById('btn-run-ocr');
-const btnTranslateAll = document.getElementById('btn-translate-all');
-const btnExport = document.getElementById('btn-export');
-const btnNew = document.getElementById('btn-new');
-const btnAddText = document.getElementById('btn-add-text');
-const btnBrushTool = document.getElementById('btn-brush-tool');
-const btnUndo = document.getElementById('btn-undo');
-const btnFit = document.getElementById('btn-fit');
-const btnZoomReset = document.getElementById('btn-zoom-reset');
+const textMgr = new TextManager(textLayer, prvCanvas);
 
-const ocrLang = document.getElementById('ocr-lang');
-const transLang = document.getElementById('trans-lang');
-const zoomRange = document.getElementById('zoom-range');
-const zoomVal = document.getElementById('zoom-val');
-const brushSize = document.getElementById('brush-size');
-const brushSizeVal = document.getElementById('brush-size-val');
-const brushColor = document.getElementById('brush-color');
-const brushModeButtons = document.querySelectorAll('[data-mode]');
+// Sync zoom UI on wheel
+editor.onZoomChange = (s) => syncZoomUI(s);
 
-const fontFamily = document.getElementById('font-family');
-const fontSize = document.getElementById('font-size');
-const textColor = document.getElementById('text-color');
-const textBg = document.getElementById('text-bg');
-const textBgOpacity = document.getElementById('text-bg-opacity');
-const newTextInput = document.getElementById('new-text-input');
-const alignBtns = document.querySelectorAll('[data-align]');
+// On selection changed: show/hide clear button
+editor.onSelectionChange = (rect) => {
+  if (btnClearSel) btnClearSel.classList.toggle('hidden', !rect);
+};
 
-// ============================================================
-// INIT MODULES
-// ============================================================
-const editor = new CanvasEditor(baseCanvas, overlayCanvas);
-const textMgr = new TextManager(textLayer, canvasWrapper);
-
+// TextManager callbacks → populate box-editor panel
 textMgr.onSelect = (id, data) => {
-  state.selectedBlockId = id;
-  highlightBlockCard(id);
+  state.selectedBlock = id;
+  highlightBlock(id);
+  if (boxEditor) boxEditor.style.display = '';
+  populateBoxEditor(data);
+};
+textMgr.onDeselect = () => {
+  if (boxEditor) boxEditor.style.display = 'none';
+  state.selectedBlock = null;
 };
 
-// ============================================================
-// IMAGE UPLOAD
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
+// UPLOAD
+// ═══════════════════════════════════════════════════════════════
+if (btnSelectFile) btnSelectFile.addEventListener('click', () => fileInput.click());
+
 dropZone.addEventListener('click', (e) => {
-  if (e.target.tagName !== 'BUTTON' && !e.target.closest('button')) return;
-  fileInput.click();
+  if (e.target === btnSelectFile || e.target.closest('#btn-select-file')) return; // handled above
+  if (e.target.closest('.drop-content')) fileInput.click();
 });
-dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropZone.classList.add('drag-over');
-});
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file && file.type.startsWith('image/')) loadImageFile(file);
-  else showToast('Arquivo inválido. Use JPG, PNG ou WebP.', 'error');
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f?.type.startsWith('image/')) loadFile(f);
+  else toast('Use JPG, PNG ou WebP.', 'error');
 });
-fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) loadImageFile(fileInput.files[0]);
-});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
 
-function loadImageFile(file) {
+function loadFile(file) {
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = (ev) => {
     const img = new Image();
     img.onload = () => {
-      state.image = img;
+      state.image  = img;
+      state.blocks = [];
+
       editor.loadImage(img);
-      canvasWrapper.classList.remove('hidden');
-      dropZone.classList.add('hidden');
-      btnRunOCR.disabled = false;
+
+      // Sync all canvas layers & preview size
+      [selCanvas, ovrCanvas, prvCanvas].forEach(c => {
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+      });
+      textMgr.syncPreviewSize(img.naturalWidth, img.naturalHeight);
+
+      // Show stage
+      stage.style.display = '';
+      dropZone.style.display = 'none';
+
+      // Fit
+      const s = editor.fitToStage(img.naturalWidth, img.naturalHeight);
+      syncZoomUI(s);
+
+      btnRunOCR.disabled  = false;
       btnAddText.disabled = false;
-      fitCanvasToContainer();
+      btnExport.disabled  = false;
       setStep(2);
-      showToast('Imagem carregada! Clique em "Detectar Texto".', 'success');
+      toast('Imagem carregada! Clique em "Detectar Texto".', 'success');
     };
-    img.src = e.target.result;
+    img.src = ev.target.result;
   };
   reader.readAsDataURL(file);
 }
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // OCR
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 btnRunOCR.addEventListener('click', async () => {
   if (!state.image) return;
-  const lang = ocrLang.value;
-
-  showLoading('Iniciando OCR...', 0);
   btnRunOCR.disabled = true;
+  showLoading('Inicializando OCR…', 0, 'Pode demorar na 1ª vez (download de dados)');
   setStep(2);
 
   try {
     state.blocks = await runOCR(
       baseCanvas,
-      lang,
-      (pct, msg) => updateLoading(msg, pct)
+      ocrLang.value,
+      (pct, msg) => updateLoading(msg, pct),
     );
 
     hideLoading();
     setStep(3);
 
-    if (state.blocks.length === 0) {
-      setStatus('ocr-status', 'Nenhum texto detectado. Tente outro idioma.', 'warning');
-      showToast('Nenhum texto encontrado.', 'warning');
+    if (!state.blocks.length) {
+      setStatus('ocr-status', 'Nenhum texto detectado. Tente outro idioma ou imagem mais nítida.', 'warning');
+      toast('Nenhum texto encontrado.', 'warning');
     } else {
       setStatus('ocr-status', `✓ ${state.blocks.length} blocos detectados.`, 'success');
-      showToast(`${state.blocks.length} blocos de texto detectados!`, 'success');
+      toast(`${state.blocks.length} blocos detectados!`, 'success');
+      btnTranslate.disabled = false;
     }
 
     editor.drawOverlay(state.blocks);
-    renderBlocks();
-    btnTranslateAll.disabled = state.blocks.length === 0;
-    btnExport.disabled = false;
+    renderBlockList();
 
   } catch (err) {
     hideLoading();
     console.error('[OCR]', err);
     setStatus('ocr-status', `Erro: ${err.message}`, 'error');
-    showToast('Erro no OCR: ' + err.message, 'error');
+    toast('Erro OCR: ' + err.message, 'error');
   } finally {
     btnRunOCR.disabled = false;
   }
 });
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // TRANSLATION
-// ============================================================
-btnTranslateAll.addEventListener('click', async () => {
+// ═══════════════════════════════════════════════════════════════
+btnTranslate.addEventListener('click', async () => {
   if (!state.blocks.length) return;
-  const srcLang = ocrLang.value;
-  const tgtLang = transLang.value;
-
-  btnTranslateAll.disabled = true;
+  btnTranslate.disabled = true;
   setStep(3);
-  setStatus('trans-status', `Traduzindo ${state.blocks.length} blocos...`, 'info');
+  showLoading('Traduzindo…', 0, `${state.blocks.length} blocos`);
 
-  // Marcar todos como "traduzindo"
-  for (const b of state.blocks) b.translating = true;
-  renderBlocks();
+  state.blocks.forEach(b => { b.translating = true; });
+  renderBlockList();
 
   let done = 0;
-  const items = state.blocks.map(b => ({ id: b.id, text: b.text }));
-
-  await translateBatch(items, srcLang, tgtLang, (id, result, error) => {
-    const block = state.blocks.find(b => b.id === id);
-    if (!block) return;
-    block.translating = false;
-    if (result) {
-      block.translation = result.text;
-      block.translatedBy = result.service;
-    } else {
-      block.translation = '';
-      block.translationError = error?.message;
-    }
-    done++;
-    updateBlockCard(block);
-    updateLoading(`Traduzindo... ${done}/${state.blocks.length}`, (done / state.blocks.length) * 100);
-  });
+  await translateBatch(
+    state.blocks.map(b => ({ id: b.id, text: b.text })),
+    ocrLang.value,
+    transLang.value,
+    (id, result, err) => {
+      const b = state.blocks.find(x => x.id === id);
+      if (!b) return;
+      b.translating = false;
+      if (result) { b.translation = result.text; b.translatedBy = result.service; }
+      else        { b.translationError = err?.message; }
+      done++;
+      updateBlockCard(b);
+      updateLoading(`Traduzindo… ${done}/${state.blocks.length}`, (done / state.blocks.length) * 100);
+    },
+  );
 
   hideLoading();
   setStep(4);
-  const translated = state.blocks.filter(b => b.translation).length;
-  setStatus('trans-status', `✓ ${translated}/${state.blocks.length} traduzidos.`, 'success');
-  showToast(`Tradução concluída: ${translated} blocos.`, 'success');
-  btnTranslateAll.disabled = false;
+  const ok = state.blocks.filter(b => b.translation).length;
+  setStatus('trans-status', `✓ ${ok}/${state.blocks.length} traduzidos.`, 'success');
+  toast(`Tradução: ${ok} blocos OK.`, 'success');
+  btnTranslate.disabled = false;
+  renderBlockList();
 });
 
-// ============================================================
-// BLOCKS PANEL
-// ============================================================
-function renderBlocks() {
-  renderBlocksList(state.blocks, {
-    onSelect: (id) => selectBlock(id),
-    onToggleVisibility: (id) => toggleBlockVisibility(id),
-    onApplyTranslation: (id, text) => applyTranslation(id, text),
-    onDelete: (id) => deleteBlock(id),
-    onTranslationEdit: (id, text) => {
-      const b = state.blocks.find(b => b.id === id);
-      if (b) b.translation = text;
-    },
+// ═══════════════════════════════════════════════════════════════
+// BLOCK LIST CALLBACKS
+// ═══════════════════════════════════════════════════════════════
+function renderBlockList() {
+  renderBlocks(state.blocks, {
+    onSelect:          (id) => selectBlock(id),
+    onToggleVis:       (id) => { const b = state.blocks.find(x => x.id === id); if (b) { b.visible = !b.visible; editor.drawOverlay(state.blocks, state.selectedBlock); renderBlockList(); } },
+    onErase:           (id) => eraseBlockArea(id),
+    onDelete:          (id) => deleteBlock(id),
+    onApply:           (id, text) => applyTranslation(id, text),
+    onTranslationEdit: (id, text) => { const b = state.blocks.find(x => x.id === id); if (b) b.translation = text; },
   });
 }
 
 function selectBlock(id) {
-  state.selectedBlockId = id;
-  highlightBlockCard(id);
+  state.selectedBlock = id;
+  highlightBlock(id);
   editor.drawOverlay(state.blocks, id);
-  // Scroll canvas para a bbox
-  const block = state.blocks.find(b => b.id === id);
-  if (block) scrollCanvasToBlock(block);
-}
-
-function toggleBlockVisibility(id) {
-  const block = state.blocks.find(b => b.id === id);
-  if (!block) return;
-  block.visible = !block.visible;
-  editor.drawOverlay(state.blocks, state.selectedBlockId);
-  renderBlocks();
+  scrollToBlock(state.blocks.find(b => b.id === id));
 }
 
 function deleteBlock(id) {
   state.blocks = state.blocks.filter(b => b.id !== id);
-  textMgr.removeBox(id);
-  editor.drawOverlay(state.blocks, state.selectedBlockId);
-  renderBlocks();
+  textMgr.remove(id);
+  editor.drawOverlay(state.blocks, state.selectedBlock);
+  renderBlockList();
+}
+
+function eraseBlockArea(id) {
+  const b = state.blocks.find(x => x.id === id);
+  if (!b) return;
+  const bg = boxBg?.value || '#ffffff';
+  editor.fillRect(b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h, bg);
+  toast('Área apagada.', 'info');
 }
 
 function applyTranslation(id, text) {
-  const block = state.blocks.find(b => b.id === id);
-  if (!block || !text) return;
+  const b = state.blocks.find(x => x.id === id);
+  if (!b || !text) { toast('Texto de tradução vazio.', 'warning'); return; }
 
-  const scale = getCanvasScale();
-  const fSize = parseInt(fontSize.value) || 18;
-  const ff = fontFamily.value;
-  const tc = textColor.value;
-  const bg = textBg.value;
-  const bgOp = parseFloat(textBgOpacity.value);
-  const al = document.querySelector('[data-align].active')?.dataset.align || 'center';
+  const font  = pickFont(b);
+  const fSize = pickFontSize(text, b.bbox, font);
+  const bg    = boxBg?.value    || '#ffffff';
+  const bgOp  = (boxOpacity?.value ?? 90) / 100;
+  const color = boxColor?.value || '#000000';
 
-  // Apagar texto original automaticamente
-  editor.fillRect(block.bbox.x, block.bbox.y, block.bbox.w, block.bbox.h, bg);
+  // 1. Apagar texto original
+  editor.fillRect(b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h, bg);
 
-  textMgr.addBox({
+  // 2. Criar caixa de tradução
+  textMgr.add({
     id,
     text,
-    x: block.bbox.x,
-    y: block.bbox.y,
-    w: block.bbox.w,
-    fontSize: fSize,
-    fontFamily: ff,
-    color: tc,
-    bgColor: bg,
-    bgOpacity: bgOp,
-    align: al,
-    scale,
+    x:          b.bbox.x + 2,
+    y:          b.bbox.y + 2,
+    w:          Math.max(b.bbox.w - 4, 60),
+    h:          b.bbox.h,
+    fontSize:   fSize,
+    fontFamily: font,
+    color,
+    bgColor:    bg,
+    bgOpacity:  bgOp,
+    align:      'center',
   });
 
-  block.applied = true;
-  showToast('Tradução aplicada!', 'success');
+  b.applied = true;
+  editor.drawOverlay(state.blocks, state.selectedBlock);
+  renderBlockList();
+  toast(`Aplicado (${font}, ${fSize}px)`, 'success');
 }
 
-function scrollCanvasToBlock(block) {
-  const scale = getCanvasScale();
-  const container = document.querySelector('.canvas-container');
-  if (!container) return;
-  container.scrollTo({
-    left: block.bbox.x * scale - container.clientWidth / 2,
-    top: block.bbox.y * scale - container.clientHeight / 2,
-    behavior: 'smooth'
-  });
+function scrollToBlock(block) {
+  if (!block) return;
+  const cx = block.bbox.x + block.bbox.w / 2;
+  const cy = block.bbox.y + block.bbox.h / 2;
+  editor.panToCenter(cx, cy);
 }
 
-// ============================================================
-// BRUSH TOOLS
-// ============================================================
-btnBrushTool.addEventListener('click', () => {
-  state.brushActive = !state.brushActive;
-  btnBrushTool.dataset.active = state.brushActive;
-  btnBrushTool.textContent = state.brushActive ? '🛑 Desativar Pincel' : '✏ Ativar Pincel';
-  btnBrushTool.classList.toggle('active', state.brushActive);
-  editor.activateBrush(state.brushActive);
-  canvasWrapper.classList.toggle('brush-active', state.brushActive);
-  if (state.brushActive) showToast('Pincel ativo! Pinte sobre o texto para apagá-lo.', 'info');
-});
-
-brushModeButtons.forEach(btn => {
+// ═══════════════════════════════════════════════════════════════
+// DRAWING TOOLS
+// ═══════════════════════════════════════════════════════════════
+toolBtns.forEach(btn => {
   btn.addEventListener('click', () => {
-    brushModeButtons.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    editor.setMode(btn.dataset.mode);
+    const tool = btn.dataset.tool;
+    const wasActive = btn.classList.contains('active');
+
+    // Deactivate all
+    toolBtns.forEach(b => b.classList.remove('active'));
+    editor.setTool(null);
+
+    if (!wasActive) {
+      btn.classList.add('active');
+      editor.setTool(tool);
+      renderToolOptions(tool);
+      toast(`Ferramenta: ${btn.textContent.trim()}`, 'info', 1800);
+    } else {
+      renderToolOptions(null);
+    }
   });
 });
 
-brushSize.addEventListener('input', () => {
-  brushSizeVal.textContent = brushSize.value;
-  editor.setSize(parseInt(brushSize.value));
+function renderToolOptions(tool) {
+  const opts = $('tool-options');
+  if (!opts) return;
+  opts.innerHTML = '';
+
+  if (!tool || tool === 'selection') return;
+
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'tool-group';
+  sizeRow.innerHTML = `
+    <label class="tool-label">Tamanho: <span id="t-size-val">20</span>px</label>
+    <input type="range" id="t-size" min="3" max="120" value="20" class="tool-range" />
+  `;
+  opts.appendChild(sizeRow);
+
+  if (tool === 'brush' || tool === 'fill') {
+    const colorRow = document.createElement('div');
+    colorRow.className = 'tool-group';
+    colorRow.innerHTML = `<label class="tool-label">Cor</label><input type="color" id="t-color" value="#ffffff" class="tool-color" />`;
+    opts.appendChild(colorRow);
+    const colorInp = opts.querySelector('#t-color');
+    colorInp?.addEventListener('input', () => editor.setToolColor(colorInp.value));
+  }
+
+  if (tool === 'clone') {
+    const hint = document.createElement('p');
+    hint.className = 'tip-text';
+    hint.textContent = 'Ctrl+click = define origem. Click = clona.';
+    opts.appendChild(hint);
+    editor.toast = toast; // pass toast reference for clone feedback
+  }
+
+  const sizeInp = opts.querySelector('#t-size');
+  const sizeV   = opts.querySelector('#t-size-val');
+  if (sizeInp) {
+    sizeInp.addEventListener('input', () => {
+      editor.setToolSize(+sizeInp.value);
+      if (sizeV) sizeV.textContent = sizeInp.value;
+    });
+  }
+}
+
+// Fill selection with color
+btnClearSel?.addEventListener('click', () => {
+  editor.clearSelection();
+  btnClearSel.classList.add('hidden');
 });
 
-brushColor.addEventListener('input', () => editor.setColor(brushColor.value));
+// ═══════════════════════════════════════════════════════════════
+// UNDO / REDO
+// ═══════════════════════════════════════════════════════════════
+btnUndo?.addEventListener('click', () => { if (editor.undo()) toast('Desfeito.', 'info'); else toast('Nada para desfazer.', 'warning'); });
+btnRedo?.addEventListener('click', () => { if (editor.redo()) toast('Refeito.',  'info'); else toast('Nada para refazer.',  'warning'); });
 
-btnUndo.addEventListener('click', () => {
-  if (editor.undo()) showToast('Ação desfeita.', 'info');
-  else showToast('Nada para desfazer.', 'warning');
-});
-
-// ============================================================
-// TEXT TOOL
-// ============================================================
-btnAddText.addEventListener('click', () => {
-  const text = newTextInput.value.trim();
-  if (!text) { showToast('Digite um texto primeiro.', 'warning'); return; }
-
-  const id = `manual-${Date.now()}`;
-  const scale = getCanvasScale();
-  const al = document.querySelector('[data-align].active')?.dataset.align || 'center';
-
-  textMgr.addBox({
-    id,
+// ═══════════════════════════════════════════════════════════════
+// TEXT MANUAL
+// ═══════════════════════════════════════════════════════════════
+btnAddText?.addEventListener('click', () => {
+  const text = newTextIn?.value.trim();
+  if (!text) { toast('Digite o texto.', 'warning'); return; }
+  textMgr.add({
     text,
-    x: 50,
-    y: 50,
-    w: 150,
-    fontSize: parseInt(fontSize.value) || 18,
-    fontFamily: fontFamily.value,
-    color: textColor.value,
-    bgColor: textBg.value,
-    bgOpacity: parseFloat(textBgOpacity.value),
-    align: al,
-    scale,
+    x:          Math.floor(baseCanvas.width  * 0.05),
+    y:          Math.floor(baseCanvas.height * 0.05),
+    w:          Math.floor(baseCanvas.width  * 0.3),
+    fontSize:   +boxFontSize?.value || 18,
+    fontFamily: boxFontFam?.value   || 'Bangers',
+    color:      boxColor?.value     || '#000000',
+    bgColor:    boxBg?.value        || '#ffffff',
+    bgOpacity:  (boxOpacity?.value ?? 90) / 100,
+    align:      document.querySelector('.align-btn.active')?.dataset.align || 'center',
   });
-
-  newTextInput.value = '';
-  showToast('Texto adicionado! Arraste para posicionar.', 'success');
-  btnExport.disabled = false;
+  if (newTextIn) newTextIn.value = '';
+  toast('Texto adicionado. Arraste para posicionar.', 'success');
 });
 
-// Alignment buttons
+// ═══════════════════════════════════════════════════════════════
+// BOX EDITOR PANEL (live update selected box)
+// ═══════════════════════════════════════════════════════════════
+function populateBoxEditor(data) {
+  if (boxText)     boxText.value    = data.text;
+  if (boxFontFam)  boxFontFam.value = data.fontFamily;
+  if (boxFontSize) boxFontSize.value= data.fontSize;
+  if (boxColor)    boxColor.value   = data.color;
+  if (boxBg)       boxBg.value      = data.bgColor;
+  if (boxOpacity)  { boxOpacity.value = Math.round(data.bgOpacity * 100); if (boxOpacityV) boxOpacityV.textContent = boxOpacity.value; }
+  if (boxRotation) { boxRotation.value = data.rotation; if (boxRotationV) boxRotationV.textContent = data.rotation; }
+  alignBtns.forEach(b => b.classList.toggle('active', b.dataset.align === data.align));
+}
+
+// Debounce helper for text input
+let _textDebounce;
+boxText?.addEventListener('input', () => {
+  clearTimeout(_textDebounce);
+  _textDebounce = setTimeout(() => textMgr.updateSelected({ text: boxText.value }), 60);
+});
+
+boxFontFam?.addEventListener('change',  () => textMgr.updateSelected({ fontFamily: boxFontFam.value }));
+boxFontSize?.addEventListener('input',  () => textMgr.updateSelected({ fontSize: +boxFontSize.value || 18 }));
+boxColor?.addEventListener('input',     () => textMgr.updateSelected({ color: boxColor.value }));
+boxBg?.addEventListener('input',        () => textMgr.updateSelected({ bgColor: boxBg.value }));
+boxOpacity?.addEventListener('input',   () => {
+  if (boxOpacityV) boxOpacityV.textContent = boxOpacity.value;
+  textMgr.updateSelected({ bgOpacity: boxOpacity.value / 100 });
+});
+boxRotation?.addEventListener('input',  () => {
+  if (boxRotationV) boxRotationV.textContent = boxRotation.value;
+  textMgr.updateSelected({ rotation: +boxRotation.value });
+});
 alignBtns.forEach(btn => {
   btn.addEventListener('click', () => {
     alignBtns.forEach(b => b.classList.remove('active'));
@@ -358,131 +464,126 @@ alignBtns.forEach(btn => {
     textMgr.updateSelected({ align: btn.dataset.align });
   });
 });
-
-// Font controls update selected text
-fontFamily.addEventListener('change', () => textMgr.updateSelected({ fontFamily: fontFamily.value }));
-fontSize.addEventListener('input', () => textMgr.updateSelected({ fontSize: parseInt(fontSize.value) }));
-textColor.addEventListener('input', () => textMgr.updateSelected({ color: textColor.value }));
-textBg.addEventListener('input', () => textMgr.updateSelected({ bgColor: textBg.value }));
-textBgOpacity.addEventListener('input', () => textMgr.updateSelected({ bgOpacity: parseFloat(textBgOpacity.value) }));
-
-// ============================================================
-// ZOOM
-// ============================================================
-zoomRange.addEventListener('input', () => {
-  const z = parseInt(zoomRange.value) / 100;
-  setZoom(z);
+btnDeleteBox?.addEventListener('click', () => {
+  if (textMgr.selectedId) { textMgr.remove(textMgr.selectedId); toast('Caixa removida.', 'info'); }
 });
 
-btnFit.addEventListener('click', fitCanvasToContainer);
-btnZoomReset.addEventListener('click', () => setZoom(1));
-
-function setZoom(z) {
-  state.zoom = z;
-  zoomRange.value = Math.round(z * 100);
-  zoomVal.textContent = Math.round(z * 100);
-  canvasWrapper.style.transform = `scale(${z})`;
-  canvasWrapper.style.transformOrigin = 'top left';
-  textMgr.updateScale(z);
-}
-
-function fitCanvasToContainer() {
+// ═══════════════════════════════════════════════════════════════
+// ZOOM
+// ═══════════════════════════════════════════════════════════════
+zoomRange?.addEventListener('input', () => {
+  const s = +zoomRange.value / 100;
+  editor.setScale(s);
+  syncZoomUI(editor.scale);
+});
+btnFit?.addEventListener('click', () => {
   if (!state.image) return;
-  const container = document.querySelector('.canvas-container');
-  const cw = container.clientWidth - 40;
-  const ch = container.clientHeight - 40;
-  const zw = cw / state.image.naturalWidth;
-  const zh = ch / state.image.naturalHeight;
-  setZoom(Math.min(zw, zh, 1));
+  const s = editor.fitToStage(state.image.naturalWidth, state.image.naturalHeight);
+  syncZoomUI(s);
+});
+btnZoomReset?.addEventListener('click', () => {
+  editor.setScale(1);
+  if (state.image) editor.centerInStage(state.image.naturalWidth, state.image.naturalHeight);
+  syncZoomUI(1);
+});
+
+function syncZoomUI(s) {
+  if (zoomRange) zoomRange.value = Math.round(s * 100);
+  if (zoomVal)   zoomVal.textContent = Math.round(s * 100);
 }
 
-function getCanvasScale() {
-  return state.zoom;
-}
-
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // EXPORT
-// ============================================================
-btnExport.addEventListener('click', async () => {
-  showLoading('Exportando imagem...', 50);
+// ═══════════════════════════════════════════════════════════════
+btnExport?.addEventListener('click', () => {
+  showLoading('Exportando…', 70);
   try {
-    const scale = state.zoom;
-    const dataUrl = await editor.exportImage(textLayer, scale);
-    const link = document.createElement('a');
-    link.download = `manga-traduzido-${Date.now()}.png`;
-    link.href = dataUrl;
-    link.click();
+    const url = editor.exportImage(textMgr.getAllData());
+    const a   = Object.assign(document.createElement('a'), {
+      download: `manga-${Date.now()}.png`, href: url,
+    });
+    a.click();
     setStep(5);
     hideLoading();
-    showToast('Imagem exportada com sucesso!', 'success');
-  } catch (err) {
+    toast('Imagem exportada!', 'success');
+  } catch (e) {
     hideLoading();
-    console.error('[export]', err);
-    showToast('Erro ao exportar: ' + err.message, 'error');
+    toast('Erro ao exportar: ' + e.message, 'error');
   }
 });
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // NEW IMAGE
-// ============================================================
-btnNew.addEventListener('click', () => {
-  if (!confirm('Iniciar com nova imagem? O progresso atual será perdido.')) return;
-  state.image = null;
+// ═══════════════════════════════════════════════════════════════
+btnNew?.addEventListener('click', () => {
+  if (!confirm('Iniciar com nova imagem? O progresso será perdido.')) return;
+
+  state.image  = null;
   state.blocks = [];
-  state.selectedBlockId = null;
-  state.brushActive = false;
 
   editor.clearOverlay();
   textMgr.clear();
-  renderBlocks();
 
-  canvasWrapper.classList.add('hidden');
-  dropZone.classList.remove('hidden');
+  stage.style.display = 'none';
+  dropZone.style.display = '';
 
-  btnRunOCR.disabled = true;
-  btnTranslateAll.disabled = true;
-  btnExport.disabled = true;
+  btnRunOCR.disabled  = true;
+  btnTranslate.disabled = true;
   btnAddText.disabled = true;
+  fileInput.value     = '';
 
-  fileInput.value = '';
+  clearStatus('ocr-status');
+  clearStatus('trans-status');
+  renderBlockList();
   setStep(1);
-  hideStatus('ocr-status');
-  hideStatus('trans-status');
+  if (boxEditor) boxEditor.style.display = 'none';
 });
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // KEYBOARD SHORTCUTS
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-  if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (textMgr.selectedId) {
-      textMgr.removeBox(textMgr.selectedId);
-      showToast('Texto removido.', 'info');
-    }
+  const map = {
+    'b': 'brush', 'e': 'eraser', 'u': 'blur',
+    'f': 'fill',  'c': 'clone',  's': 'selection',
+  };
+
+  if (map[e.key]) {
+    const btn = document.querySelector(`.tool-btn[data-tool="${map[e.key]}"]`);
+    if (btn) btn.click();
+    return;
   }
-  if (e.ctrlKey && e.key === 'z') {
-    e.preventDefault();
-    editor.undo();
+
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); btnUndo?.click(); }
+  if (e.ctrlKey && e.key === 'y') { e.preventDefault(); btnRedo?.click(); }
+  if (e.key === '0') btnFit?.click();
+  if (e.key === '1') btnZoomReset?.click();
+  if ((e.key === '+' || e.key === '=') && !e.ctrlKey) {
+    editor.setScale(editor.scale * 1.15); syncZoomUI(editor.scale);
   }
-  if (e.key === '+' || e.key === '=') {
-    setZoom(Math.min(3, state.zoom + 0.1));
-  }
-  if (e.key === '-') {
-    setZoom(Math.max(0.2, state.zoom - 0.1));
-  }
-  if (e.key === 'b' || e.key === 'B') {
-    btnBrushTool.click();
+  if (e.key === '-' && !e.ctrlKey) {
+    editor.setScale(editor.scale / 1.15); syncZoomUI(editor.scale);
   }
   if (e.key === 'Escape') {
+    toolBtns.forEach(b => b.classList.remove('active'));
+    editor.setTool(null);
+    editor.clearSelection();
     textMgr.deselect();
-    if (state.brushActive) btnBrushTool.click();
+    renderToolOptions(null);
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && textMgr.selectedId) {
+    textMgr.remove(textMgr.selectedId);
+    toast('Caixa removida.', 'info');
   }
 });
 
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
 // INIT
-// ============================================================
+// ═══════════════════════════════════════════════════════════════
+if (boxEditor) boxEditor.style.display = 'none';
+renderBlockList();
 setStep(1);
-showToast('MangaEasyTranslator carregado! Faça upload de uma página de mangá.', 'info', 4000);
+toast('MangaEasyTranslator v3 pronto! Faça upload de uma página.', 'info', 4000);

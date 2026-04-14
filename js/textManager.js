@@ -1,280 +1,335 @@
 /**
- * textManager.js — Gerencia caixas de texto draggable/resizable sobre o canvas.
+ * textManager.js — Gerencia caixas de texto DOM sobre o canvas.
+ *
+ * Features:
+ *  • Drag, resize (SE + S), rotate (handle superior)
+ *  • Live preview em #preview-canvas via requestAnimationFrame
+ *  • Não freezes: preview é debounced e usa rAF
+ *  • Dados separados do DOM (source of truth = this.boxes Map)
  */
 
-export class TextManager {
-  constructor(textLayer, canvasWrapper) {
-    this.textLayer = textLayer;
-    this.canvasWrapper = canvasWrapper;
-    this.boxes = new Map(); // id → { el, data }
-    this.selectedId = null;
-    this.onSelect = null; // callback(id)
+import { renderBoxToCanvas } from './editor.js';
 
-    // Clique fora deseleciona
+export class TextManager {
+  constructor(textLayer, previewCanvas) {
+    this.textLayer     = textLayer;
+    this.previewCanvas = previewCanvas;
+    this.pCtx          = previewCanvas.getContext('2d');
+
+    this.boxes      = new Map();   // id → { el, data }
+    this.selectedId = null;
+
+    // Callbacks
+    this.onSelect   = null;  // (id, data) => void
+    this.onDeselect = null;  // () => void
+
+    // rAF preview
+    this._previewDirty = false;
+    this._rafId        = null;
+
+    // Deselect when clicking outside
     document.addEventListener('mousedown', (e) => {
-      if (!e.target.closest('.text-overlay')) {
+      if (!e.target.closest('.text-box') &&
+          !e.target.closest('#box-editor') &&
+          !e.target.closest('#panel-right')) {
         this.deselect();
       }
     });
   }
 
-  /**
-   * Adiciona uma caixa de texto.
-   * @param {object} opts
-   */
-  addBox({
-    id,
-    text,
-    x = 50,
-    y = 50,
-    w = 120,
-    fontSize = 18,
-    fontFamily = 'Bangers',
-    color = '#000000',
-    bgColor = '#ffffff',
-    bgOpacity = 0.85,
-    align = 'center',
-    scale = 1,
-  }) {
-    // Remove se já existe
-    if (this.boxes.has(id)) this.removeBox(id);
+  // ═══════════════════════════════════════════════════
+  // ADD BOX
+  // ═══════════════════════════════════════════════════
+  add(opts) {
+    const data = {
+      id:         opts.id ?? `box-${Date.now()}`,
+      text:       opts.text       ?? '',
+      x:          opts.x          ?? 50,
+      y:          opts.y          ?? 50,
+      w:          opts.w          ?? 140,
+      h:          opts.h          ?? null,   // auto if null
+      fontSize:   opts.fontSize   ?? 18,
+      fontFamily: opts.fontFamily ?? 'Bangers',
+      color:      opts.color      ?? '#000000',
+      bgColor:    opts.bgColor    ?? '#ffffff',
+      bgOpacity:  opts.bgOpacity  ?? 0.9,
+      align:      opts.align      ?? 'center',
+      rotation:   opts.rotation   ?? 0,
+    };
+    data.h = data.h ?? this._estimateH(data);
 
+    if (this.boxes.has(data.id)) this.remove(data.id);
+
+    const el = this._buildElement(data);
+    this.textLayer.appendChild(el);
+    this.boxes.set(data.id, { el, data });
+
+    this._schedulePreview();
+    this.select(data.id);
+    return data;
+  }
+
+  // ═══════════════════════════════════════════════════
+  // BUILD DOM ELEMENT
+  // ═══════════════════════════════════════════════════
+  _buildElement(data) {
     const el = document.createElement('div');
-    el.className = 'text-overlay';
-    el.id = `tbox-${id}`;
+    el.className  = 'text-box';
+    el.id         = `tb-${data.id}`;
 
-    el.style.left = `${x * scale}px`;
-    el.style.top = `${y * scale}px`;
-    el.style.width = `${w * scale}px`;
-    el.style.fontSize = `${fontSize * scale}px`;
-    el.style.fontFamily = `${fontFamily}, sans-serif`;
-    el.style.color = color;
-    el.style.backgroundColor = this._hexToRgba(bgColor, bgOpacity);
-    el.style.textAlign = align;
+    this._applyStyles(el, data);
 
-    // Dataset para exportação
-    el.dataset.text = text;
-    el.dataset.fontSize = fontSize;
-    el.dataset.fontFamily = fontFamily;
-    el.dataset.color = color;
-    el.dataset.bgColor = bgColor;
-    el.dataset.bgOpacity = bgOpacity;
-    el.dataset.align = align;
+    // Text span
+    const span = document.createElement('span');
+    span.className = 'tb-text';
+    el.appendChild(span);
 
-    el.innerText = text;
+    // Controls
+    el.appendChild(this._makeHandle('tb-delete',    '×', 'mousedown', () => this.remove(data.id)));
+    el.appendChild(this._makeHandle('tb-resize-se', '',  'mousedown', (e) => this._resizeSE(e, data.id)));
+    el.appendChild(this._makeHandle('tb-resize-s',  '',  'mousedown', (e) => this._resizeS(e, data.id)));
+    el.appendChild(this._makeHandle('tb-rotate',    '↻', 'mousedown', (e) => this._startRotate(e, data.id)));
 
-    // Resize handle
-    const resizeHandle = document.createElement('div');
-    resizeHandle.className = 'resize-handle';
-    el.appendChild(resizeHandle);
-
-    // Delete button
-    const delBtn = document.createElement('div');
-    delBtn.className = 'delete-btn';
-    delBtn.innerText = '×';
-    delBtn.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      this.removeBox(id);
-    });
-    el.appendChild(delBtn);
-
-    this._makeDraggable(el, id);
-    this._makeResizable(el, resizeHandle, id);
+    this._applyContent(el, data);
 
     el.addEventListener('mousedown', (e) => {
-      if (e.target === delBtn || e.target === resizeHandle) return;
+      if (['tb-resize-se','tb-resize-s','tb-rotate','tb-delete'].some(c => e.target.classList.contains(c))) return;
       e.stopPropagation();
-      this.select(id);
+      this.select(data.id);
+      this._startDrag(e, data.id);
     });
 
-    this.textLayer.appendChild(el);
-    this.boxes.set(id, {
-      el,
-      data: { id, text, x, y, w, fontSize, fontFamily, color, bgColor, bgOpacity, align }
+    el.addEventListener('dblclick', () => {
+      this.select(data.id);
+      const ta = document.getElementById('box-text');
+      if (ta) { ta.focus(); ta.select(); }
     });
 
-    this.select(id);
     return el;
   }
 
-  removeBox(id) {
+  _makeHandle(cls, text, evt, handler) {
+    const h = document.createElement('div');
+    h.className = cls;
+    if (text) h.textContent = text;
+    h.addEventListener(evt, (e) => { e.stopPropagation(); handler(e); });
+    return h;
+  }
+
+  _applyStyles(el, data) {
+    el.style.cssText = `
+      left: ${data.x}px; top: ${data.y}px;
+      width: ${data.w}px; min-height: ${data.h}px;
+      font-size: ${data.fontSize}px;
+      font-family: '${data.fontFamily}', sans-serif;
+      color: ${data.color};
+      background-color: ${rgba(data.bgColor, data.bgOpacity)};
+      text-align: ${data.align};
+      transform: rotate(${data.rotation}deg);
+      transform-origin: center center;
+      white-space: pre-wrap;
+    `;
+  }
+
+  _applyContent(el, data) {
+    const span = el.querySelector('.tb-text');
+    if (span) span.textContent = data.text;
+  }
+
+  // ═══════════════════════════════════════════════════
+  // UPDATE / SELECT / REMOVE
+  // ═══════════════════════════════════════════════════
+  update(id, patch) {
     const box = this.boxes.get(id);
     if (!box) return;
-    box.el.remove();
-    this.boxes.delete(id);
-    if (this.selectedId === id) this.selectedId = null;
+    Object.assign(box.data, patch);
+    if ('text' in patch || 'fontSize' in patch || 'w' in patch) {
+      box.data.h = this._estimateH(box.data);
+    }
+    this._applyStyles(box.el, box.data);
+    this._applyContent(box.el, box.data);
+    if (box.el.classList.contains('selected')) box.el.classList.add('selected'); // keep
+    this._schedulePreview();
+  }
+
+  updateSelected(patch) {
+    if (this.selectedId) this.update(this.selectedId, patch);
   }
 
   select(id) {
-    // Deseleciona anterior
-    if (this.selectedId) {
-      const prev = this.boxes.get(this.selectedId);
-      if (prev) prev.el.classList.remove('selected');
+    if (this.selectedId && this.selectedId !== id) {
+      this.boxes.get(this.selectedId)?.el.classList.remove('selected');
     }
     this.selectedId = id;
     const box = this.boxes.get(id);
     if (box) {
       box.el.classList.add('selected');
-      if (this.onSelect) this.onSelect(id, box.data);
+      if (this.onSelect) this.onSelect(id, { ...box.data });
     }
   }
 
   deselect() {
-    if (this.selectedId) {
-      const box = this.boxes.get(this.selectedId);
-      if (box) box.el.classList.remove('selected');
-    }
+    if (!this.selectedId) return;
+    this.boxes.get(this.selectedId)?.el.classList.remove('selected');
     this.selectedId = null;
+    if (this.onDeselect) this.onDeselect();
   }
 
-  updateSelected(opts) {
-    if (!this.selectedId) return;
-    const box = this.boxes.get(this.selectedId);
+  remove(id) {
+    const box = this.boxes.get(id);
+    if (!box) return;
+    box.el.remove();
+    this.boxes.delete(id);
+    if (this.selectedId === id) { this.selectedId = null; if (this.onDeselect) this.onDeselect(); }
+    this._schedulePreview();
+  }
+
+  clear() { [...this.boxes.keys()].forEach(id => this.remove(id)); }
+
+  getAllData() { return [...this.boxes.values()].map(b => ({ ...b.data })); }
+
+  // ═══════════════════════════════════════════════════
+  // LIVE PREVIEW  (rAF-debounced, never blocks UI)
+  // ═══════════════════════════════════════════════════
+  _schedulePreview() {
+    this._previewDirty = true;
+    if (this._rafId) return;
+    this._rafId = requestAnimationFrame(() => {
+      this._rafId = null;
+      if (!this._previewDirty) return;
+      this._previewDirty = false;
+      this._renderPreview();
+    });
+  }
+
+  _renderPreview() {
+    const pc  = this.previewCanvas;
+    if (!pc.width || !pc.height) return;
+    this.pCtx.clearRect(0, 0, pc.width, pc.height);
+    for (const { data } of this.boxes.values()) {
+      renderBoxToCanvas(this.pCtx, data);
+    }
+  }
+
+  syncPreviewSize(w, h) {
+    if (this.previewCanvas.width !== w || this.previewCanvas.height !== h) {
+      this.previewCanvas.width  = w;
+      this.previewCanvas.height = h;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════
+  // DRAG
+  // ═══════════════════════════════════════════════════
+  _startDrag(e, id) {
+    const box = this.boxes.get(id);
+    if (!box) return;
+    const { data } = box;
+    let sx = e.clientX, sy = e.clientY;
+    let ox = data.x,    oy = data.y;
+
+    const onMove = (ev) => {
+      data.x = ox + ev.clientX - sx;
+      data.y = oy + ev.clientY - sy;
+      box.el.style.left = `${data.x}px`;
+      box.el.style.top  = `${data.y}px`;
+      this._schedulePreview();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }
+
+  // ═══════════════════════════════════════════════════
+  // RESIZE SE (width)
+  // ═══════════════════════════════════════════════════
+  _resizeSE(e, id) {
+    const box = this.boxes.get(id);
+    if (!box) return;
+    const { data } = box;
+    let sx = e.clientX, sw = data.w;
+    const onMove = (ev) => {
+      data.w = Math.max(50, sw + ev.clientX - sx);
+      box.el.style.width = `${data.w}px`;
+      this._schedulePreview();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }
+
+  // ═══════════════════════════════════════════════════
+  // RESIZE S (height)
+  // ═══════════════════════════════════════════════════
+  _resizeS(e, id) {
+    const box = this.boxes.get(id);
+    if (!box) return;
+    const { data } = box;
+    let sy = e.clientY, sh = data.h;
+    const onMove = (ev) => {
+      data.h = Math.max(20, sh + ev.clientY - sy);
+      box.el.style.minHeight = `${data.h}px`;
+      this._schedulePreview();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  }
+
+  // ═══════════════════════════════════════════════════
+  // ROTATE
+  // ═══════════════════════════════════════════════════
+  _startRotate(e, id) {
+    const box = this.boxes.get(id);
     if (!box) return;
     const { el, data } = box;
-    const scale = this._getScale();
+    const rect = el.getBoundingClientRect();
+    const cx   = rect.left + rect.width  / 2;
+    const cy   = rect.top  + rect.height / 2;
 
-    if (opts.text !== undefined) {
-      data.text = opts.text;
-      el.dataset.text = opts.text;
-      el.innerText = opts.text;
-      // Re-add handles (innerText removes them)
-      el.appendChild(el.querySelector('.resize-handle') || this._makeResizeHandle(el));
-      el.appendChild(el.querySelector('.delete-btn') || this._makeDelBtn(el, this.selectedId));
-    }
-    if (opts.fontSize !== undefined) {
-      data.fontSize = opts.fontSize;
-      el.style.fontSize = `${opts.fontSize * scale}px`;
-      el.dataset.fontSize = opts.fontSize;
-    }
-    if (opts.fontFamily !== undefined) {
-      data.fontFamily = opts.fontFamily;
-      el.style.fontFamily = `${opts.fontFamily}, sans-serif`;
-      el.dataset.fontFamily = opts.fontFamily;
-    }
-    if (opts.color !== undefined) {
-      data.color = opts.color;
-      el.style.color = opts.color;
-      el.dataset.color = opts.color;
-    }
-    if (opts.bgColor !== undefined || opts.bgOpacity !== undefined) {
-      if (opts.bgColor !== undefined) data.bgColor = opts.bgColor;
-      if (opts.bgOpacity !== undefined) data.bgOpacity = opts.bgOpacity;
-      el.style.backgroundColor = this._hexToRgba(data.bgColor, data.bgOpacity);
-      el.dataset.bgColor = data.bgColor;
-      el.dataset.bgOpacity = data.bgOpacity;
-    }
-    if (opts.align !== undefined) {
-      data.align = opts.align;
-      el.style.textAlign = opts.align;
-      el.dataset.align = opts.align;
-    }
-  }
-
-  updateScale(scale) {
-    for (const [, box] of this.boxes) {
-      const { el, data } = box;
-      el.style.left = `${data.x * scale}px`;
-      el.style.top = `${data.y * scale}px`;
-      el.style.width = `${data.w * scale}px`;
-      el.style.fontSize = `${data.fontSize * scale}px`;
-    }
-  }
-
-  clear() {
-    for (const [id] of this.boxes) this.removeBox(id);
-  }
-
-  _getScale() {
-    // Estima o scale a partir do tamanho visual vs original
-    const canvas = this.canvasWrapper.querySelector('#base-canvas');
-    if (!canvas) return 1;
-    const rect = canvas.getBoundingClientRect();
-    return rect.width / canvas.width;
-  }
-
-  _hexToRgba(hex, opacity) {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return `rgba(${r},${g},${b},${opacity})`;
-  }
-
-  _makeDraggable(el, id) {
-    let startX, startY, startLeft, startTop;
-
-    const onMove = (e) => {
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      const dx = clientX - startX;
-      const dy = clientY - startY;
-      el.style.left = `${startLeft + dx}px`;
-      el.style.top = `${startTop + dy}px`;
+    const onMove = (ev) => {
+      const angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI) + 90;
+      data.rotation = Math.round(angle);
+      el.style.transform       = `rotate(${data.rotation}deg)`;
+      el.style.transformOrigin = 'center center';
+      this._schedulePreview();
+      // Update panel
+      const inp = document.getElementById('box-rotation');
+      const val = document.getElementById('box-rotation-val');
+      if (inp) inp.value = data.rotation;
+      if (val) val.textContent = data.rotation;
     };
-
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.removeEventListener('touchmove', onMove);
-      document.removeEventListener('touchend', onUp);
-
-      // Salvar posição real (sem scale)
-      const scale = this._getScale();
-      const box = this.boxes.get(id);
-      if (box) {
-        box.data.x = parseFloat(el.style.left) / scale;
-        box.data.y = parseFloat(el.style.top) / scale;
-      }
+      document.removeEventListener('mouseup',   onUp);
     };
-
-    el.addEventListener('mousedown', (e) => {
-      if (e.target.classList.contains('resize-handle') ||
-          e.target.classList.contains('delete-btn')) return;
-      startX = e.clientX;
-      startY = e.clientY;
-      startLeft = parseFloat(el.style.left) || 0;
-      startTop = parseFloat(el.style.top) || 0;
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-
-    el.addEventListener('touchstart', (e) => {
-      if (e.target.classList.contains('resize-handle') ||
-          e.target.classList.contains('delete-btn')) return;
-      const t = e.touches[0];
-      startX = t.clientX;
-      startY = t.clientY;
-      startLeft = parseFloat(el.style.left) || 0;
-      startTop = parseFloat(el.style.top) || 0;
-      document.addEventListener('touchmove', onMove);
-      document.addEventListener('touchend', onUp);
-    });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
   }
 
-  _makeResizable(el, handle, id) {
-    let startX, startW;
-
-    const onMove = (e) => {
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const dx = clientX - startX;
-      const newW = Math.max(60, startW + dx);
-      el.style.width = `${newW}px`;
-    };
-
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      const scale = this._getScale();
-      const box = this.boxes.get(id);
-      if (box) box.data.w = parseFloat(el.style.width) / scale;
-    };
-
-    handle.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      startX = e.clientX;
-      startW = parseFloat(el.style.width) || 100;
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
+  // ═══════════════════════════════════════════════════
+  // HELPERS
+  // ═══════════════════════════════════════════════════
+  _estimateH(data) {
+    const { text, fontSize, w } = data;
+    const lines = text.split('\n');
+    const cpp   = Math.max(1, Math.floor(w / (fontSize * 0.58)));
+    let total   = 0;
+    for (const l of lines) total += Math.max(1, Math.ceil(l.length / cpp));
+    return Math.max(fontSize * 1.5, total * fontSize * 1.35 + 12);
   }
+}
+
+function rgba(hex, a) {
+  if (!hex || hex.length < 7) return `rgba(255,255,255,${a})`;
+  return `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${a})`;
 }

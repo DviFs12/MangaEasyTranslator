@@ -1,177 +1,138 @@
 /**
- * ui.js — Utilitários de interface: toast, loading, steps, blocks list.
+ * ui.js — Utilitários de UI: toast, loading, steps, blocks list.
  */
 
-// ---- TOAST ----
-let toastTimer = null;
-export function showToast(msg, type = 'info', duration = 3000) {
-  const toast = document.getElementById('toast');
-  if (!toast) return;
-  toast.textContent = msg;
-  toast.className = `toast show ${type}`;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+// ── Toast ──────────────────────────────────────────────────────
+let _toastTimer;
+export function toast(msg, type = 'info', ms = 3200) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.className   = `toast show ${type}`;
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
-// ---- LOADING ----
-export function showLoading(msg = 'Processando...', pct = 0) {
-  const overlay = document.getElementById('loading-overlay');
-  const msgEl = document.getElementById('loading-msg');
-  const fill = document.getElementById('progress-fill');
-  if (!overlay) return;
-  overlay.classList.remove('hidden');
-  if (msgEl) msgEl.textContent = msg;
-  if (fill) fill.style.width = `${pct}%`;
+// ── Loading ────────────────────────────────────────────────────
+export function showLoading(msg = 'Processando…', pct = 0, sub = '') {
+  const ov  = document.getElementById('loading-overlay');
+  const msg_el = document.getElementById('loading-msg');
+  const sub_el = document.getElementById('loading-sub');
+  const fill   = document.getElementById('progress-fill');
+  if (ov)    ov.style.display = 'flex';
+  if (msg_el) msg_el.textContent = msg;
+  if (sub_el) sub_el.textContent = sub;
+  if (fill)   fill.style.width   = `${pct}%`;
 }
-
-export function updateLoading(msg, pct) {
-  const msgEl = document.getElementById('loading-msg');
-  const fill = document.getElementById('progress-fill');
-  if (msgEl) msgEl.textContent = msg;
-  if (fill) fill.style.width = `${pct}%`;
+export function updateLoading(msg, pct, sub = '') {
+  const msg_el = document.getElementById('loading-msg');
+  const sub_el = document.getElementById('loading-sub');
+  const fill   = document.getElementById('progress-fill');
+  if (msg_el) msg_el.textContent = msg;
+  if (sub_el) sub_el.textContent = sub;
+  if (fill)   fill.style.width   = `${pct}%`;
 }
-
 export function hideLoading() {
-  const overlay = document.getElementById('loading-overlay');
-  if (overlay) overlay.classList.add('hidden');
+  const ov = document.getElementById('loading-overlay');
+  if (ov) ov.style.display = 'none';
 }
 
-// ---- STEPS ----
+// ── Steps ──────────────────────────────────────────────────────
 export function setStep(n) {
   document.querySelectorAll('.step').forEach(el => {
-    const s = parseInt(el.dataset.step);
-    el.classList.remove('active', 'done');
-    if (s === n) el.classList.add('active');
-    else if (s < n) el.classList.add('done');
+    const s = +el.dataset.step;
+    el.classList.toggle('active', s === n);
+    el.classList.toggle('done',   s < n);
   });
 }
 
-// ---- STATUS BOXES ----
-export function setStatus(elId, msg, type = 'info') {
-  const el = document.getElementById(elId);
+// ── Status boxes ───────────────────────────────────────────────
+export function setStatus(id, msg, type = 'info') {
+  const el = document.getElementById(id);
   if (!el) return;
   el.textContent = msg;
-  el.className = `status-box ${type}`;
+  el.className   = `status-box ${type}`;
   el.classList.remove('hidden');
 }
-
-export function hideStatus(elId) {
-  const el = document.getElementById(elId);
+export function clearStatus(id) {
+  const el = document.getElementById(id);
   if (el) el.classList.add('hidden');
 }
 
-// ---- BLOCKS LIST (painel direito) ----
-export function renderBlocksList(blocks, {
-  onSelect,
-  onToggleVisibility,
-  onApplyTranslation,
-  onDelete,
-  onTranslationEdit,
-}) {
-  const list = document.getElementById('blocks-list');
-  const countEl = document.getElementById('block-count');
+// ── Blocks list ────────────────────────────────────────────────
+export function renderBlocks(blocks, callbacks) {
+  const list  = document.getElementById('blocks-list');
+  const badge = document.getElementById('block-count');
   if (!list) return;
 
+  if (badge) badge.textContent = blocks.length;
   list.innerHTML = '';
-  if (countEl) countEl.textContent = blocks.length;
 
-  if (blocks.length === 0) {
-    list.innerHTML = '<p class="empty-hint">Nenhum texto detectado ainda.</p>';
+  if (!blocks.length) {
+    list.innerHTML = '<p class="empty-hint">Nenhum bloco detectado ainda.</p>';
     return;
   }
 
-  for (const block of blocks) {
+  for (const b of blocks) {
     const card = document.createElement('div');
-    card.className = 'block-card';
-    card.id = `card-${block.id}`;
-    card.dataset.id = block.id;
+    card.className = 'block-card' + (b.applied ? ' applied' : '');
+    card.dataset.id = b.id;
 
-    const confColor = block.confidence > 70 ? '#2a9d5c' :
-                      block.confidence > 40 ? '#f4a261' : '#e63946';
+    const confColor = b.confidence > 70 ? '#2d9e5f' : b.confidence > 40 ? '#e07d10' : '#c0392b';
 
     card.innerHTML = `
       <div class="block-header">
-        <span class="block-badge">#${block.id.split('-')[1]}</span>
-        <span style="font-size:0.7rem;color:${confColor};font-weight:700">${block.confidence}%</span>
+        <span class="block-num">#${b.id.split('-')[1]}</span>
+        <span class="block-conf" style="color:${confColor}">${b.confidence}%</span>
         <div class="block-actions">
-          <button class="block-btn vis-btn" title="${block.visible ? 'Ocultar bbox' : 'Mostrar bbox'}">
-            ${block.visible ? '👁' : '🙈'}
-          </button>
-          <button class="block-btn erase-btn" title="Apagar texto original no canvas">🖌</button>
-          <button class="block-btn danger del-btn" title="Remover bloco">🗑</button>
+          <button class="block-action-btn vis-btn" title="Mostrar/ocultar bbox">${b.visible ? '👁' : '🙈'}</button>
+          <button class="block-action-btn erase-btn" title="Apagar texto no canvas">🖌</button>
+          <button class="block-action-btn del btn-del" title="Remover bloco">🗑</button>
         </div>
       </div>
-      <div class="block-original" title="Texto original">${escapeHtml(block.text)}</div>
-      <textarea class="block-translation" placeholder="Tradução..." rows="2">${escapeHtml(block.translation || '')}</textarea>
-      <div class="block-status ${getStatusClass(block)}">
-        ${getStatusLabel(block)}
+      <div class="block-original">${esc(b.text)}</div>
+      <textarea class="block-translation" rows="2" placeholder="Tradução...">${esc(b.translation || '')}</textarea>
+      <div class="block-status ${b.translating ? 'translating' : b.translation ? 'done' : ''}">
+        ${b.translating ? '⏳ Traduzindo…' : b.translation ? '✓ Traduzido' : '· Aguardando'}
       </div>
-      <button class="block-apply-btn" title="Inserir tradução no canvas">✓ Aplicar Tradução</button>
+      <button class="block-apply-btn">✓ Aplicar Tradução</button>
     `;
 
-    // Events
-    card.querySelector('.vis-btn').addEventListener('click', () => onToggleVisibility(block.id));
-    card.querySelector('.erase-btn').addEventListener('click', () => {
-      onSelect(block.id);
-    });
-    card.querySelector('.del-btn').addEventListener('click', () => onDelete(block.id));
-    card.querySelector('.block-apply-btn').addEventListener('click', () => {
+    card.querySelector('.vis-btn').onclick    = (e) => { e.stopPropagation(); callbacks.onToggleVis(b.id); };
+    card.querySelector('.erase-btn').onclick  = (e) => { e.stopPropagation(); callbacks.onErase(b.id); };
+    card.querySelector('.del.btn-del').onclick = (e) => { e.stopPropagation(); callbacks.onDelete(b.id); };
+    card.querySelector('.block-apply-btn').onclick = (e) => {
+      e.stopPropagation();
       const ta = card.querySelector('.block-translation');
-      onApplyTranslation(block.id, ta.value.trim());
-    });
+      callbacks.onApply(b.id, ta.value.trim());
+    };
     card.querySelector('.block-translation').addEventListener('input', (e) => {
-      onTranslationEdit(block.id, e.target.value);
+      callbacks.onTranslationEdit(b.id, e.target.value);
     });
-    card.addEventListener('click', (e) => {
-      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'TEXTAREA') return;
-      onSelect(block.id);
-    });
+    card.onclick = () => callbacks.onSelect(b.id);
 
     list.appendChild(card);
   }
 }
 
 export function updateBlockCard(block) {
-  const card = document.getElementById(`card-${block.id}`);
+  const card = document.querySelector(`.block-card[data-id="${block.id}"]`);
   if (!card) return;
-
-  const ta = card.querySelector('.block-translation');
-  if (ta && block.translation && ta.value !== block.translation) {
-    ta.value = block.translation;
-  }
-
-  const status = card.querySelector('.block-status');
-  if (status) {
-    status.className = `block-status ${getStatusClass(block)}`;
-    status.textContent = getStatusLabel(block);
+  const ta  = card.querySelector('.block-translation');
+  const st  = card.querySelector('.block-status');
+  if (ta && block.translation && ta.value !== block.translation) ta.value = block.translation;
+  if (st) {
+    st.className   = `block-status ${block.translating ? 'translating' : block.translation ? 'done' : ''}`;
+    st.textContent = block.translating ? '⏳ Traduzindo…' : block.translation ? '✓ Traduzido' : '· Aguardando';
   }
 }
 
-export function highlightBlockCard(id) {
+export function highlightBlock(id) {
   document.querySelectorAll('.block-card').forEach(c => c.classList.remove('selected'));
-  const card = document.getElementById(`card-${id}`);
-  if (card) {
-    card.classList.add('selected');
-    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
+  const c = document.querySelector(`.block-card[data-id="${id}"]`);
+  if (c) { c.classList.add('selected'); c.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
-function getStatusClass(block) {
-  if (block.translating) return 'translating';
-  if (block.translation) return 'done';
-  return '';
-}
-
-function getStatusLabel(block) {
-  if (block.translating) return '⏳ Traduzindo...';
-  if (block.translation) return '✓ Traduzido';
-  return '· Aguardando tradução';
-}
-
-function escapeHtml(text) {
-  return (text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+function esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }

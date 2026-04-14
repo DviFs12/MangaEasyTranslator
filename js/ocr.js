@@ -1,184 +1,214 @@
 /**
- * ocr.js — OCR module via Tesseract.js (CDN)
- * Detecta texto em imagens e retorna blocos com bounding boxes.
+ * ocr.js — OCR via Tesseract.js v4 (carregado via <script> tag como window.Tesseract)
+ *
+ * API correta do Tesseract.js v4:
+ *   const worker = await Tesseract.createWorker({ logger })
+ *   await worker.loadLanguage(lang)
+ *   await worker.initialize(lang)
+ *   await worker.setParameters({...})
+ *   const { data } = await worker.recognize(image)
+ *   await worker.terminate()
+ *
+ * A API ESM/v5 tem outra assinatura — não misturar.
  */
 
-const TESSERACT_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.5/tesseract.esm.min.js';
-
-let Tesseract = null;
-
-async function loadTesseract() {
-  if (Tesseract) return Tesseract;
-  const mod = await import(TESSERACT_CDN);
-  Tesseract = mod;
-  return Tesseract;
+/** Aguarda window.Tesseract estar disponível */
+function waitForTesseract(timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) return resolve(window.Tesseract);
+    const t0 = Date.now();
+    const id = setInterval(() => {
+      if (window.Tesseract) { clearInterval(id); resolve(window.Tesseract); }
+      else if (Date.now() - t0 > timeoutMs) { clearInterval(id); reject(new Error('Tesseract.js não carregou. Verifique sua conexão.')); }
+    }, 150);
+  });
 }
 
 /**
- * Roda OCR em uma imagem (HTMLImageElement ou canvas ou dataURL).
- * @param {string|HTMLCanvasElement} imageSource
- * @param {string} lang - ex: 'jpn', 'eng'
- * @param {function} onProgress - callback(pct, msg)
- * @returns {Promise<Array>} Array de blocos { id, text, bbox: {x,y,w,h}, confidence }
+ * Executa OCR em um HTMLCanvasElement.
+ * @param {HTMLCanvasElement} canvas
+ * @param {string} lang - 'jpn' | 'eng' | 'chi_sim' | 'kor'
+ * @param {(pct:number, msg:string)=>void} onProgress
+ * @returns {Promise<OcrBlock[]>}
  */
-export async function runOCR(imageSource, lang = 'jpn', onProgress = () => {}) {
-  const T = await loadTesseract();
+export async function runOCR(canvas, lang = 'jpn', onProgress = () => {}) {
+  const T = await waitForTesseract();
 
-  onProgress(5, 'Carregando motor OCR...');
+  onProgress(5, 'Iniciando Tesseract…');
 
-  const worker = await T.createWorker(lang, 1, {
-    workerPath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.5/worker.min.js',
-    corePath: 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.5/tesseract-core-simd-lstm.wasm.js',
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-    logger: (m) => {
-      if (m.status === 'recognizing text') {
-        onProgress(20 + Math.floor(m.progress * 70), 'Reconhecendo texto...');
-      } else if (m.status === 'loading tesseract core') {
-        onProgress(10, 'Carregando núcleo OCR...');
-      } else if (m.status === 'loading language traineddata') {
-        onProgress(15, `Carregando dados de idioma (${lang})...`);
+  let worker;
+  try {
+    // Tesseract.js v4 createWorker aceita opções como primeiro argumento
+    worker = await T.createWorker({
+      logger(m) {
+        if (m.status === 'loading tesseract core')
+          onProgress(8, 'Carregando núcleo OCR…');
+        else if (m.status === 'loading language traineddata')
+          onProgress(14, `Baixando dados: ${lang} (pode demorar na 1ª vez)…`);
+        else if (m.status === 'initializing tesseract')
+          onProgress(17, 'Inicializando Tesseract…');
+        else if (m.status === 'initializing api')
+          onProgress(19, 'Inicializando API…');
+        else if (m.status === 'recognizing text')
+          onProgress(22 + Math.round(m.progress * 68), 'Reconhecendo texto…');
+      },
+    });
+
+    onProgress(11, `Carregando idioma: ${lang}…`);
+    await worker.loadLanguage(lang);
+
+    onProgress(18, 'Inicializando…');
+    await worker.initialize(lang);
+
+    // PSM 11 (sparse text) é melhor para mangá:
+    // detecta texto fragmentado em múltiplos balões sem esperar layout contínuo.
+    await worker.setParameters({ tessedit_pageseg_mode: '11' });
+
+    onProgress(22, 'Analisando imagem…');
+
+    // Passar dataURL é mais compatível que passar o canvas diretamente
+    const imageData = canvas.toDataURL('image/png');
+    const { data } = await worker.recognize(imageData);
+
+    onProgress(92, 'Extraindo blocos…');
+    const blocks = extractBlocks(data);
+
+    onProgress(100, `Concluído — ${blocks.length} blocos`);
+    return blocks;
+
+  } finally {
+    if (worker) {
+      try { await worker.terminate(); } catch (_) {}
+    }
+  }
+}
+
+// ─────────────────────────────────────────
+// Extração hierárquica: blocks → paragraphs → lines → words
+// ─────────────────────────────────────────
+
+function extractBlocks(data) {
+  let items = [];
+  let counter = 0;
+
+  // Nível 1: blocos/parágrafos (ideal para balões completos)
+  if (data.blocks?.length) {
+    for (const tb of data.blocks) {
+      for (const para of (tb.paragraphs || [])) {
+        const text = clean(para.text);
+        if (!text || para.confidence < 8) continue;
+        const bb = para.bbox;
+        if (!bb || bb.x1 - bb.x0 < 3 || bb.y1 - bb.y0 < 3) continue;
+        items.push(makeBlock(counter++, text, bb, para.confidence));
       }
     }
-  });
-
-  // Para japonês, configurações especiais que melhoram resultados em mangá
-  if (lang === 'jpn') {
-    await worker.setParameters({
-      tessedit_pageseg_mode: T.PSM.AUTO,
-      preserve_interword_spaces: '1',
-    });
   }
 
-  onProgress(20, 'Analisando imagem...');
-
-  const { data } = await worker.recognize(imageSource);
-  await worker.terminate();
-
-  onProgress(95, 'Processando resultados...');
-
-  // Extrair blocos de texto com posição
-  const blocks = extractTextBlocks(data);
-
-  onProgress(100, 'OCR concluído!');
-  return blocks;
-}
-
-/**
- * Extrai blocos de texto agrupados dos dados do Tesseract.
- * Tenta agrupar palavras em linhas/parágrafos com sentido.
- */
-function extractTextBlocks(data) {
-  const blocks = [];
-  let idCounter = 0;
-
-  // Nível de parágrafo é o melhor para mangá (balões completos)
-  if (data.paragraphs && data.paragraphs.length > 0) {
-    for (const para of data.paragraphs) {
-      const text = para.text.trim();
-      if (!text || text.length < 1) continue;
-      if (para.confidence < 15) continue; // descarta confiança muito baixa
-
-      const bbox = para.bbox;
-      if (!bbox || (bbox.x1 - bbox.x0) < 5 || (bbox.y1 - bbox.y0) < 5) continue;
-
-      blocks.push({
-        id: `block-${idCounter++}`,
-        text: cleanText(text),
-        bbox: {
-          x: bbox.x0,
-          y: bbox.y0,
-          w: bbox.x1 - bbox.x0,
-          h: bbox.y1 - bbox.y0,
-        },
-        confidence: Math.round(para.confidence),
-        translation: '',
-        visible: true,
-      });
-    }
-  }
-
-  // Fallback: usar linhas se não há parágrafos
-  if (blocks.length === 0 && data.lines) {
+  // Nível 2: linhas (fallback)
+  if (!items.length && data.lines?.length) {
     for (const line of data.lines) {
-      const text = line.text.trim();
-      if (!text || text.length < 1) continue;
-      if (line.confidence < 15) continue;
-
-      const bbox = line.bbox;
-      if (!bbox || (bbox.x1 - bbox.x0) < 5) continue;
-
-      blocks.push({
-        id: `block-${idCounter++}`,
-        text: cleanText(text),
-        bbox: {
-          x: bbox.x0,
-          y: bbox.y0,
-          w: bbox.x1 - bbox.x0,
-          h: bbox.y1 - bbox.y0,
-        },
-        confidence: Math.round(line.confidence),
-        translation: '',
-        visible: true,
-      });
+      const text = clean(line.text);
+      if (!text || line.confidence < 8) continue;
+      const bb = line.bbox;
+      if (!bb || bb.x1 - bb.x0 < 3) continue;
+      items.push(makeBlock(counter++, text, bb, line.confidence));
     }
   }
 
-  // Mesclar blocos muito próximos (provável mesmo balão)
-  return mergeNearbyBlocks(blocks);
+  // Nível 3: palavras agrupadas por proximidade (último recurso)
+  if (!items.length && data.words?.length) {
+    const words = data.words.filter(w => clean(w.text) && w.confidence > 8);
+    items = clusterWords(words, counter);
+  }
+
+  return mergeVerticalNeighbors(items);
+}
+
+function makeBlock(id, text, bb, confidence) {
+  return {
+    id: `block-${id}`,
+    text,
+    bbox: { x: bb.x0, y: bb.y0, w: bb.x1 - bb.x0, h: bb.y1 - bb.y0 },
+    confidence: Math.round(confidence),
+    translation: '',
+    visible: true,
+    applied: false,
+  };
+}
+
+function clean(t) {
+  return (t || '').replace(/\s+/g, ' ').trim();
 }
 
 /**
- * Limpa o texto OCR de artefatos comuns.
+ * Agrupa palavras em clusters baseados em proximidade espacial.
+ * Heurística: palavras do mesmo balão de mangá ficam próximas e
+ * têm alturas similares (mesmo tamanho de fonte).
  */
-function cleanText(text) {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/[^\S\n]+/g, ' ')
-    .trim();
-}
-
-/**
- * Mescla blocos que estão muito próximos verticalmente (mesmo balão).
- */
-function mergeNearbyBlocks(blocks, threshold = 30) {
-  if (blocks.length < 2) return blocks;
-
-  const merged = [];
+function clusterWords(words, startId) {
+  const clusters = [];
   const used = new Set();
 
-  for (let i = 0; i < blocks.length; i++) {
+  for (let i = 0; i < words.length; i++) {
     if (used.has(i)) continue;
-    const a = blocks[i];
-    let combined = { ...a, bbox: { ...a.bbox } };
+    const group = [words[i]];
+    used.add(i);
 
-    for (let j = i + 1; j < blocks.length; j++) {
+    for (let j = i + 1; j < words.length; j++) {
       if (used.has(j)) continue;
-      const b = blocks[j];
+      const a = group[group.length - 1];
+      const b = words[j];
+      const lineOverlap = Math.min(a.bbox.y1, b.bbox.y1) - Math.max(a.bbox.y0, b.bbox.y0);
+      const hDist = b.bbox.x0 - a.bbox.x1;
+      const vDist = Math.abs(b.bbox.y0 - a.bbox.y0);
 
-      // Verificar sobreposição horizontal e proximidade vertical
-      const aRight = a.bbox.x + a.bbox.w;
-      const bRight = b.bbox.x + b.bbox.w;
-      const xOverlap = Math.min(aRight, bRight) - Math.max(a.bbox.x, b.bbox.x);
-      const aBottom = a.bbox.y + a.bbox.h;
-      const bTop = b.bbox.y;
-      const vDist = bTop - aBottom;
-
-      if (xOverlap > 0 && vDist > 0 && vDist < threshold) {
-        // Mesclar
-        combined.text = combined.text + '\n' + b.text;
-        const newX = Math.min(combined.bbox.x, b.bbox.x);
-        const newY = Math.min(combined.bbox.y, b.bbox.y);
-        const newRight = Math.max(combined.bbox.x + combined.bbox.w, b.bbox.x + b.bbox.w);
-        const newBottom = Math.max(combined.bbox.y + combined.bbox.h, b.bbox.y + b.bbox.h);
-        combined.bbox = { x: newX, y: newY, w: newRight - newX, h: newBottom - newY };
-        combined.confidence = Math.min(combined.confidence, b.confidence);
+      if ((lineOverlap > 0 && hDist < 60) || (vDist < 18 && hDist < 80)) {
+        group.push(b);
         used.add(j);
       }
     }
 
-    merged.push(combined);
+    const xs = group.flatMap(w => [w.bbox.x0, w.bbox.x1]);
+    const ys = group.flatMap(w => [w.bbox.y0, w.bbox.y1]);
+    const conf = group.reduce((s, w) => s + w.confidence, 0) / group.length;
+    const bb = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+
+    clusters.push(makeBlock(startId++, clean(group.map(w => w.text).join(' ')), bb, conf));
+  }
+  return clusters;
+}
+
+/**
+ * Mescla blocos adjacentes verticalmente com sobreposição horizontal,
+ * para unir linhas do mesmo balão que o Tesseract separou.
+ */
+function mergeVerticalNeighbors(blocks, vGap = 28, hOverlapRatio = 0.25) {
+  if (blocks.length < 2) return blocks;
+  const out = [];
+  const used = new Set();
+
+  for (let i = 0; i < blocks.length; i++) {
+    if (used.has(i)) continue;
+    let cur = { ...blocks[i], bbox: { ...blocks[i].bbox } };
+
+    for (let j = i + 1; j < blocks.length; j++) {
+      if (used.has(j)) continue;
+      const a = cur.bbox, b = blocks[j].bbox;
+      const aR = a.x + a.w, bR = b.x + b.w;
+      const overlapX = Math.min(aR, bR) - Math.max(a.x, b.x);
+      const minW = Math.min(a.w, b.w);
+      const gap = b.y - (a.y + a.h);
+
+      if (overlapX / minW >= hOverlapRatio && gap >= 0 && gap <= vGap) {
+        cur.text += '\n' + blocks[j].text;
+        const nx = Math.min(a.x, b.x), ny = Math.min(a.y, b.y);
+        cur.bbox = { x: nx, y: ny, w: Math.max(aR, bR) - nx, h: Math.max(a.y + a.h, b.y + b.h) - ny };
+        cur.confidence = Math.min(cur.confidence, blocks[j].confidence);
+        used.add(j);
+      }
+    }
+    out.push(cur);
     used.add(i);
   }
-
-  return merged;
+  return out;
 }
