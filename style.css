@@ -337,3 +337,18 @@ body {
   :root { --panel-w: 188px; --panel-r-w: 0px; }
   .panel-right { display: none; }
 }
+
+/* ── v4 additions ── */
+.block-warning {
+  font-size: .68rem; font-weight: 700; color: #c0392b;
+  background: #fdecea; border: 1px solid #f5b4b0;
+  border-radius: 4px; padding: 3px 7px; margin-top: 3px;
+}
+.block-badge-manual {
+  font-size: .66rem; font-weight: 700;
+  background: #457b9d; color: #fff;
+  padding: 1px 5px; border-radius: 8px; margin-right: 2px;
+}
+.block-action-btn.danger:hover {
+  background: #fdecea; border-color: var(--c-danger); color: var(--c-danger);
+}

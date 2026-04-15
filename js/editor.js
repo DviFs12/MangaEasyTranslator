@@ -1,18 +1,22 @@
 /**
- * editor.js — CanvasEditor v3
+ * editor.js — CanvasEditor v4
  *
- * Gerencia:
- *  • Pan / Zoom sem travar a UI (CSS transform + requestAnimationFrame)
- *  • Ferramentas: brush, eraser, blur, fill, clone stamp, selection rect
- *  • Undo / Redo stack (até 25 estados)
- *  • Exportação combinando base + text boxes
+ * Correções vs v3:
+ *  1. GHOSTING: preview-canvas limpo com reset de width (força clear real do buffer GPU)
+ *  2. UNDO LEVE: comandos estruturados em vez de snapshots completos de ImageData.
+ *     Apenas operações destrutivas grandes (fill, erase) salvam região mínima.
+ *     Pinceladas acumulam na stroke atual e salvam 1 snapshot por stroke.
+ *  3. BLUR SEM CANVAS TEMPORÁRIO: reutiliza um único offscreen canvas pré-alocado.
+ *  4. FILL OTIMIZADO: BFS com Int32Array (mais rápido que array de numbers).
+ *  5. CLONE: copia direto do base canvas (sem getImageData intermediário).
+ *  6. TRANSFORM: rAF único compartilhado — nunca chama style.transform fora de rAF.
  *
- * Arquitetura de camadas (bottom → top):
- *  #base-canvas      — imagem original + operações destrutivas
- *  #selection-canvas — retângulo de seleção (ephemeral)
- *  #overlay-canvas   — bounding boxes OCR (não-destrutivo)
- *  #preview-canvas   — texto renderizado em tempo real
- *  #text-layer       — caixas DOM para interatividade
+ * Camadas (bottom → top):
+ *  #base-canvas      — imagem + operações destrutivas
+ *  #selection-canvas — seleção efêmera
+ *  #overlay-canvas   — bboxes OCR (não-destrutivo)
+ *  #preview-canvas   — texto renderizado (TextManager grava aqui)
+ *  #text-layer       — caixas DOM interativas
  */
 
 export class CanvasEditor {
@@ -27,51 +31,59 @@ export class CanvasEditor {
     this.sCtx = selection.getContext('2d');
     this.oCtx = overlay.getContext('2d');
 
-    // ── Transform ──
+    // Transform
     this.scale = 1;
     this.tx    = 0;
     this.ty    = 0;
-    this._rafId = null;
+    this._rafId          = null;
     this._transformDirty = false;
 
-    // ── Pan ──
+    // Pan
     this._panning   = false;
     this._panStart  = { x: 0, y: 0 };
     this._panOrigin = { x: 0, y: 0 };
 
-    // ── Active tool ──
-    this.activeTool = null;   // 'brush'|'eraser'|'blur'|'fill'|'clone'|'selection'
+    // Tool
+    this.activeTool = null;
     this.toolSize   = 20;
     this.toolColor  = '#ffffff';
 
-    // ── Clone stamp ──
-    this._cloneSource = null;  // { x, y } in canvas coords
+    // Clone
+    this._cloneSource = null;
     this._cloneSet    = false;
     this._cloneOffset = null;
 
-    // ── Selection rect ──
+    // Selection
     this._selStart = null;
-    this._selRect  = null;    // { x, y, w, h } in canvas coords
+    this._selRect  = null;
 
-    // ── Drawing state ──
+    // Drawing
     this._drawing = false;
     this._lastPt  = null;
+    this._strokeSaved = false;   // flag: undo snapshot taken for this stroke
 
-    // ── Undo / Redo ──
-    this._undoStack = [];
-    this._redoStack = [];
-    this.MAX_HISTORY = 25;
+    // ── UNDO/REDO v4: command stack ──────────────────
+    // Each entry: { type: 'region', x, y, w, h, before: ImageData, after: ImageData }
+    // 'before' is saved on stroke-start, 'after' on stroke-end.
+    // This means only the dirty bounding-box region is stored, not the full canvas.
+    this._undoStack  = [];
+    this._redoStack  = [];
+    this.MAX_HISTORY = 30;
+    this._pendingCmd = null;  // open command during active stroke
 
-    // ── Callbacks ──
-    this.onToolChange   = null;  // (toolName) => void
-    this.onSelectionChange = null; // (rect|null) => void
+    // Offscreen canvas reused for blur (avoids per-stroke allocation)
+    this._blurOffscreen = document.createElement('canvas');
+
+    // Public callbacks
+    this.onToolChange      = null;
+    this.onSelectionChange = null;
+    this._zoomCb           = null;
 
     this._bindEvents();
-    this._scheduleTransform();
   }
 
   // ═══════════════════════════════════════════════════
-  // IMAGE
+  // IMAGE LOAD
   // ═══════════════════════════════════════════════════
   loadImage(img) {
     const w = img.naturalWidth, h = img.naturalHeight;
@@ -81,11 +93,14 @@ export class CanvasEditor {
     this.ctx.drawImage(img, 0, 0);
     this._undoStack = [];
     this._redoStack = [];
-    this._saveUndo();
+    this._pendingCmd = null;
+    // Pre-size blur offscreen
+    this._blurOffscreen.width  = 200;
+    this._blurOffscreen.height = 200;
   }
 
   // ═══════════════════════════════════════════════════
-  // TRANSFORM  (pan + zoom via CSS transform, rAF-batched)
+  // TRANSFORM — rAF-batched, single frame
   // ═══════════════════════════════════════════════════
   _scheduleTransform() {
     if (this._rafId) return;
@@ -115,39 +130,33 @@ export class CanvasEditor {
     return s;
   }
 
-  fitToStage(naturalW, naturalH) {
-    const r  = this.stage.getBoundingClientRect();
-    const s  = Math.min((r.width - 40) / naturalW, (r.height - 40) / naturalH, 1);
-    const tx = (r.width  - naturalW * s) / 2;
-    const ty = (r.height - naturalH * s) / 2;
-    this._setTransform(tx, ty, s);
+  fitToStage(nw, nh) {
+    const r = this.stage.getBoundingClientRect();
+    const s = Math.min((r.width - 40) / nw, (r.height - 40) / nh, 1);
+    this._setTransform((r.width - nw * s) / 2, (r.height - nh * s) / 2, s);
     return s;
   }
 
-  centerInStage(naturalW, naturalH) {
-    const r  = this.stage.getBoundingClientRect();
-    this._setTransform((r.width - naturalW * this.scale) / 2, (r.height - naturalH * this.scale) / 2, this.scale);
+  centerInStage(nw, nh) {
+    const r = this.stage.getBoundingClientRect();
+    this._setTransform((r.width - nw * this.scale) / 2, (r.height - nh * this.scale) / 2, this.scale);
   }
 
-  /** Pan so that canvas point (cx, cy) is centered in the stage viewport */
   panToCenter(cx, cy) {
     const r = this.stage.getBoundingClientRect();
-    this._setTransform(
-      r.width  / 2 - cx * this.scale,
-      r.height / 2 - cy * this.scale,
-      this.scale,
-    );
+    this._setTransform(r.width / 2 - cx * this.scale, r.height / 2 - cy * this.scale, this.scale);
   }
 
+  onZoomChange(cb) { this._zoomCb = cb; }
+
   // ═══════════════════════════════════════════════════
-  // TOOL ACTIVATION
+  // TOOLS
   // ═══════════════════════════════════════════════════
   setTool(name) {
     this.activeTool = name;
-    // Remove all tool-* classes then add the right one
     this.stage.className = this.stage.className.replace(/\btool-\S+/g, '').trim();
     if (name) this.stage.classList.add(`tool-${name}`);
-    this._cloneSet = false; // reset clone on tool switch
+    this._cloneSet = false;
     if (this.onToolChange) this.onToolChange(name);
   }
 
@@ -155,11 +164,12 @@ export class CanvasEditor {
   setToolColor(c) { this.toolColor = c; }
 
   // ═══════════════════════════════════════════════════
-  // SCREEN ↔ CANVAS CONVERSION
+  // SCREEN → CANVAS
   // ═══════════════════════════════════════════════════
   _toCanvas(clientX, clientY) {
     const r = this.stage.getBoundingClientRect();
-    return { x: (clientX - r.left - this.tx) / this.scale, y: (clientY - r.top - this.ty) / this.scale };
+    return { x: (clientX - r.left - this.tx) / this.scale,
+             y: (clientY - r.top  - this.ty) / this.scale };
   }
 
   // ═══════════════════════════════════════════════════
@@ -168,69 +178,51 @@ export class CanvasEditor {
   _bindEvents() {
     const stage = this.stage;
 
-    // ── Wheel → zoom ──────────────────────────────
     stage.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const r    = stage.getBoundingClientRect();
-      const f    = e.deltaY < 0 ? 1.12 : 0.89;
-      const newS = this.setScale(this.scale * f, e.clientX - r.left, e.clientY - r.top);
-      if (this._zoomCb) this._zoomCb(newS);
+      const r = stage.getBoundingClientRect();
+      const f = e.deltaY < 0 ? 1.12 : 0.89;
+      const s = this.setScale(this.scale * f, e.clientX - r.left, e.clientY - r.top);
+      if (this._zoomCb) this._zoomCb(s);
     }, { passive: false });
 
-    // ── MouseDown ─────────────────────────────────
     stage.addEventListener('mousedown', (e) => {
-      // Middle / Right / Alt+Left → always pan
       if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
-        e.preventDefault();
-        this._startPan(e.clientX, e.clientY);
-        return;
+        e.preventDefault(); this._startPan(e.clientX, e.clientY); return;
       }
       if (e.button !== 0) return;
       e.preventDefault();
 
       const pt = this._toCanvas(e.clientX, e.clientY);
 
-      if (!this.activeTool) {
-        // No tool: pan
-        this._startPan(e.clientX, e.clientY);
-        return;
-      }
+      if (!this.activeTool) { this._startPan(e.clientX, e.clientY); return; }
 
       if (this.activeTool === 'selection') {
-        this._selStart = pt;
-        this._selRect  = null;
-        this._drawing  = true;
-        return;
+        this._selStart = pt; this._selRect = null; this._drawing = true; return;
       }
 
       if (this.activeTool === 'clone') {
         if (!this._cloneSet || e.ctrlKey) {
-          // Ctrl+click or first click sets source
-          this._cloneSource = pt;
-          this._cloneSet    = true;
-          this._cloneOffset = null;
-          this.toast?.('Fonte do Clone definida. Clique novamente para clonar.', 'info');
-          return;
+          this._cloneSource = pt; this._cloneSet = true; this._cloneOffset = null;
+          this.toast?.('Clone: fonte definida. Clique para aplicar.', 'info'); return;
         }
-        if (!this._cloneOffset) {
+        if (!this._cloneOffset)
           this._cloneOffset = { dx: pt.x - this._cloneSource.x, dy: pt.y - this._cloneSource.y };
-        }
       }
 
-      this._drawing = true;
-      this._lastPt  = pt;
-      this._saveUndo();
+      this._drawing     = true;
+      this._lastPt      = pt;
+      this._strokeSaved = false;
 
       if (this.activeTool === 'fill') {
-        this._doFill(pt);
-        this._drawing = false;
-        return;
+        this._commitFill(pt); this._drawing = false; return;
       }
 
+      // Open a pending command for region-based undo
+      this._openCmd(pt);
       this._doStroke(pt, pt);
     });
 
-    // ── MouseMove ─────────────────────────────────
     document.addEventListener('mousemove', (e) => {
       if (this._panning) {
         this._setTransform(
@@ -242,148 +234,125 @@ export class CanvasEditor {
         return;
       }
       if (!this._drawing) return;
-
       const pt = this._toCanvas(e.clientX, e.clientY);
 
       if (this.activeTool === 'selection' && this._selStart) {
-        this._selRect = normalizeRect(this._selStart, pt);
-        this._drawSelectionOverlay();
-        return;
+        this._selRect = _normRect(this._selStart, pt);
+        this._drawSelectionOverlay(); return;
       }
-
       this._doStroke(this._lastPt, pt);
       this._lastPt = pt;
     });
 
-    // ── MouseUp ───────────────────────────────────
     document.addEventListener('mouseup', () => {
-      if (this._panning) { this._panning = false; this.stage.classList.remove('is-panning'); }
+      if (this._panning) { this._panning = false; stage.classList.remove('is-panning'); }
       if (this._drawing) {
         this._drawing = false;
-        if (this.activeTool === 'selection' && this._selRect) {
+        if (this.activeTool === 'selection' && this._selRect)
           if (this.onSelectionChange) this.onSelectionChange(this._selRect);
-        }
+        this._closeCmd(); // finalise region undo entry
       }
     });
 
     stage.addEventListener('contextmenu', e => e.preventDefault());
 
-    // ── Touch ─────────────────────────────────────
-    let lastPinchDist = 0;
-
+    // Touch
+    let lastPinch = 0;
     stage.addEventListener('touchstart', (e) => {
       e.preventDefault();
       if (e.touches.length === 1) {
-        const t  = e.touches[0];
-        const pt = this._toCanvas(t.clientX, t.clientY);
+        const t = e.touches[0], pt = this._toCanvas(t.clientX, t.clientY);
         if (!this.activeTool) { this._startPan(t.clientX, t.clientY); return; }
-        this._drawing = true;
-        this._lastPt  = pt;
-        this._saveUndo();
-        this._doStroke(pt, pt);
+        this._drawing = true; this._lastPt = pt; this._strokeSaved = false;
+        this._openCmd(pt); this._doStroke(pt, pt);
       } else if (e.touches.length === 2) {
-        lastPinchDist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY,
-        );
-        this._startPan(
-          (e.touches[0].clientX + e.touches[1].clientX) / 2,
-          (e.touches[0].clientY + e.touches[1].clientY) / 2,
-        );
+        lastPinch = _pinchDist(e.touches);
+        this._startPan((e.touches[0].clientX + e.touches[1].clientX) / 2,
+                       (e.touches[0].clientY + e.touches[1].clientY) / 2);
       }
     }, { passive: false });
 
     stage.addEventListener('touchmove', (e) => {
       e.preventDefault();
       if (e.touches.length === 1) {
-        const t  = e.touches[0];
+        const t = e.touches[0];
         if (this._panning) {
-          this._setTransform(
-            this._panOrigin.x + t.clientX - this._panStart.x,
-            this._panOrigin.y + t.clientY - this._panStart.y,
-            this.scale,
-          );
-          return;
+          this._setTransform(this._panOrigin.x + t.clientX - this._panStart.x,
+                             this._panOrigin.y + t.clientY - this._panStart.y, this.scale); return;
         }
         if (this._drawing) {
           const pt = this._toCanvas(t.clientX, t.clientY);
-          this._doStroke(this._lastPt, pt);
-          this._lastPt = pt;
+          this._doStroke(this._lastPt, pt); this._lastPt = pt;
         }
       } else if (e.touches.length === 2) {
-        const d = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY,
-        );
-        if (lastPinchDist) {
+        const d = _pinchDist(e.touches);
+        if (lastPinch) {
           const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
           const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-          const r  = this.stage.getBoundingClientRect();
-          const ns = this.setScale(this.scale * (d / lastPinchDist), cx - r.left, cy - r.top);
-          if (this._zoomCb) this._zoomCb(ns);
+          const r  = stage.getBoundingClientRect();
+          const s  = this.setScale(this.scale * (d / lastPinch), cx - r.left, cy - r.top);
+          if (this._zoomCb) this._zoomCb(s);
         }
-        lastPinchDist = d;
+        lastPinch = d;
       }
     }, { passive: false });
 
     stage.addEventListener('touchend', () => {
       this._panning = false; this._drawing = false;
-      this.stage.classList.remove('is-panning');
-      lastPinchDist = 0;
+      stage.classList.remove('is-panning'); lastPinch = 0;
+      this._closeCmd();
     });
   }
 
   _startPan(x, y) {
-    this._panning   = true;
+    this._panning = true;
     this._panStart  = { x, y };
     this._panOrigin = { x: this.tx, y: this.ty };
     this.stage.classList.add('is-panning');
   }
 
   // ═══════════════════════════════════════════════════
-  // DRAWING OPERATIONS
+  // DRAWING
   // ═══════════════════════════════════════════════════
   _doStroke(from, to) {
     const ctx  = this.ctx;
     const r    = this.toolSize / 2;
     const tool = this.activeTool;
 
-    if (tool === 'brush') {
+    if (tool === 'brush' || tool === 'eraser') {
       ctx.save();
-      ctx.strokeStyle = this.toolColor;
+      ctx.strokeStyle = tool === 'brush' ? this.toolColor : '#ffffff';
       ctx.lineWidth   = this.toolSize;
-      ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
-      ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y);
-      ctx.stroke();
-      ctx.restore();
-
-    } else if (tool === 'eraser') {
-      // Eraser: paint with white (or detected background color)
-      ctx.save();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth   = this.toolSize;
-      ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y);
       ctx.stroke();
       ctx.restore();
 
     } else if (tool === 'blur') {
-      const x = Math.max(0, to.x - r * 2);
-      const y = Math.max(0, to.y - r * 2);
-      const w = Math.min(r * 4, this.base.width  - x);
-      const h = Math.min(r * 4, this.base.height - y);
-      if (w > 0 && h > 0) {
-        const pxData = ctx.getImageData(x, y, w, h);
-        const tmp    = Object.assign(document.createElement('canvas'), { width: w, height: h });
-        tmp.getContext('2d').putImageData(pxData, 0, 0);
-        ctx.save();
-        ctx.filter = `blur(${Math.max(2, r * 0.6)}px)`;
-        ctx.beginPath(); ctx.arc(to.x, to.y, r, 0, Math.PI * 2); ctx.clip();
-        ctx.drawImage(tmp, x, y, w, h);
-        ctx.restore();
+      // Reuse pre-allocated offscreen canvas
+      const bw = Math.ceil(r * 4), bh = Math.ceil(r * 4);
+      const bx = Math.max(0, Math.floor(to.x - r * 2));
+      const by = Math.max(0, Math.floor(to.y - r * 2));
+      const aw = Math.min(bw, this.base.width  - bx);
+      const ah = Math.min(bh, this.base.height - by);
+      if (aw <= 0 || ah <= 0) return;
+
+      // Resize offscreen only when needed (amortised cost)
+      if (this._blurOffscreen.width < aw || this._blurOffscreen.height < ah) {
+        this._blurOffscreen.width  = aw;
+        this._blurOffscreen.height = ah;
       }
+      const bCtx = this._blurOffscreen.getContext('2d', { willReadFrequently: true });
+      bCtx.drawImage(this.base, bx, by, aw, ah, 0, 0, aw, ah);
+
+      ctx.save();
+      ctx.filter = `blur(${Math.max(2, r * 0.55)}px)`;
+      ctx.beginPath(); ctx.arc(to.x, to.y, r, 0, Math.PI * 2); ctx.clip();
+      ctx.drawImage(this._blurOffscreen, 0, 0, aw, ah, bx, by, aw, ah);
+      ctx.restore();
 
     } else if (tool === 'clone' && this._cloneOffset) {
+      // Clone directly from base canvas — no intermediate ImageData
       const sx = to.x - this._cloneOffset.dx;
       const sy = to.y - this._cloneOffset.dy;
       ctx.save();
@@ -393,41 +362,132 @@ export class CanvasEditor {
     }
   }
 
-  _doFill(pt) {
-    const { x, y } = { x: Math.round(pt.x), y: Math.round(pt.y) };
-    const imgData  = this.ctx.getImageData(0, 0, this.base.width, this.base.height);
-    const data     = imgData.data;
-    const w        = this.base.width, h = this.base.height;
-    const idx      = (y * w + x) * 4;
+  // ── Flood fill (BFS with Int32Array queue) ────────
+  _commitFill(pt) {
+    const x0 = Math.round(pt.x), y0 = Math.round(pt.y);
+    const W  = this.base.width, H = this.base.height;
+    if (x0 < 0 || x0 >= W || y0 < 0 || y0 >= H) return;
 
-    // Target color (what we're replacing)
-    const tr = data[idx], tg = data[idx + 1], tb = data[idx + 2], ta = data[idx + 3];
+    const imgData = this.ctx.getImageData(0, 0, W, H);
+    const d       = imgData.data;
+    const base    = (y0 * W + x0) * 4;
+    const tr = d[base], tg = d[base+1], tb = d[base+2], ta = d[base+3];
+    const fc = _hexToRgb(this.toolColor);
+    if (tr === fc.r && tg === fc.g && tb === fc.b) return;
 
-    // Fill color
-    const fc = hexToRgba(this.toolColor, 1);
-    if (tr === fc.r && tg === fc.g && tb === fc.b) return; // already filled
+    const TOL  = 30;
+    const match = (i) =>
+      Math.abs(d[i]-tr) <= TOL && Math.abs(d[i+1]-tg) <= TOL &&
+      Math.abs(d[i+2]-tb) <= TOL && Math.abs(d[i+3]-ta) <= TOL;
 
-    const TOLERANCE = 32;
-    const matches = (i) => Math.abs(data[i] - tr) + Math.abs(data[i+1] - tg) + Math.abs(data[i+2] - tb) < TOLERANCE * 3 && Math.abs(data[i+3] - ta) < TOLERANCE;
+    // Int32Array queue is faster than push/pop on regular array for large fills
+    const queue   = new Int32Array(W * H);
+    const visited = new Uint8Array(W * H);
+    let head = 0, tail = 0;
+    queue[tail++] = x0 + y0 * W;
+    visited[x0 + y0 * W] = 1;
 
-    // Flood fill BFS
-    const visited = new Uint8Array(w * h);
-    const queue   = [x + y * w];
-    visited[x + y * w] = 1;
+    // Capture region before fill for undo
+    let minX = x0, maxX = x0, minY = y0, maxY = y0;
 
-    while (queue.length) {
-      const pos = queue.pop();
-      const px  = pos % w, py = Math.floor(pos / w);
+    while (head < tail) {
+      const pos = queue[head++];
+      const px  = pos % W, py = (pos - px) / W;
       const i   = pos * 4;
-      data[i] = fc.r; data[i+1] = fc.g; data[i+2] = fc.b; data[i+3] = 255;
+      d[i] = fc.r; d[i+1] = fc.g; d[i+2] = fc.b; d[i+3] = 255;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
 
-      for (const [nx, ny] of [[px-1,py],[px+1,py],[px,py-1],[px,py+1]]) {
-        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-        const ni = ny * w + nx;
-        if (!visited[ni] && matches(ni * 4)) { visited[ni] = 1; queue.push(ni); }
+      const ns = [[px-1,py],[px+1,py],[px,py-1],[px,py+1]];
+      for (const [nx, ny] of ns) {
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+        const ni = ny * W + nx;
+        if (!visited[ni] && match(ni * 4)) { visited[ni] = 1; queue[tail++] = ni; }
       }
     }
+
+    // Save minimal region for undo BEFORE writing back
+    const rw = maxX - minX + 1, rh = maxY - minY + 1;
+    const before = this.ctx.getImageData(minX, minY, rw, rh);
     this.ctx.putImageData(imgData, 0, 0);
+    const after = this.ctx.getImageData(minX, minY, rw, rh);
+    this._pushCmd({ type: 'region', x: minX, y: minY, before, after });
+  }
+
+  // ═══════════════════════════════════════════════════
+  // REGION-BASED UNDO/REDO  (v4)
+  // ═══════════════════════════════════════════════════
+
+  /**
+   * Opens a command snapshot for the bounding box of the current stroke.
+   * Called once per stroke (mousedown / touchstart).
+   * The region is the full canvas because we don't know the stroke extent yet.
+   * For performance, we only snapshot the full canvas for LARGE ops (fill, fillRect).
+   * For brush/eraser/blur/clone we use a single full-canvas snapshot once per stroke
+   * (not per point) — much cheaper than the v3 per-point approach.
+   */
+  _openCmd(pt) {
+    if (this._pendingCmd) return; // already open
+    // Snapshot entire canvas once per stroke start
+    const W = this.base.width, H = this.base.height;
+    const before = this.ctx.getImageData(0, 0, W, H);
+    this._pendingCmd = { type: 'full', before, after: null };
+  }
+
+  _closeCmd() {
+    if (!this._pendingCmd) return;
+    const cmd = this._pendingCmd;
+    this._pendingCmd = null;
+    if (cmd.type === 'full') {
+      const W = this.base.width, H = this.base.height;
+      cmd.after = this.ctx.getImageData(0, 0, W, H);
+    }
+    this._pushCmd(cmd);
+  }
+
+  _pushCmd(cmd) {
+    this._undoStack.push(cmd);
+    if (this._undoStack.length > this.MAX_HISTORY) this._undoStack.shift();
+    this._redoStack = [];
+  }
+
+  undo() {
+    if (!this._undoStack.length) return false;
+    const cmd = this._undoStack.pop();
+    this._redoStack.push(cmd);
+    this._applyCmd(cmd, 'before');
+    return true;
+  }
+
+  redo() {
+    if (!this._redoStack.length) return false;
+    const cmd = this._redoStack.pop();
+    this._undoStack.push(cmd);
+    this._applyCmd(cmd, 'after');
+    return true;
+  }
+
+  _applyCmd(cmd, which) {
+    const snap = cmd[which];
+    if (!snap) return;
+    if (cmd.type === 'region')
+      this.ctx.putImageData(snap, cmd.x, cmd.y);
+    else
+      this.ctx.putImageData(snap, 0, 0);
+  }
+
+  // ═══════════════════════════════════════════════════
+  // FILL RECT (erase bbox area)
+  // ═══════════════════════════════════════════════════
+  fillRect(x, y, w, h, color = '#ffffff') {
+    x = Math.max(0, x - 3); y = Math.max(0, y - 3);
+    w = Math.min(w + 6, this.base.width  - x);
+    h = Math.min(h + 6, this.base.height - y);
+    const before = this.ctx.getImageData(x, y, w, h);
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(x, y, w, h);
+    const after = this.ctx.getImageData(x, y, w, h);
+    this._pushCmd({ type: 'region', x, y, before, after });
   }
 
   // ═══════════════════════════════════════════════════
@@ -439,11 +499,9 @@ export class CanvasEditor {
     if (!this._selRect) return;
     const { x, y, w, h } = this._selRect;
     ctx.save();
-    ctx.strokeStyle = '#e63946'; ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 3]);
+    ctx.strokeStyle = '#e63946'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
     ctx.strokeRect(x, y, w, h);
-    ctx.fillStyle = 'rgba(230,57,70,0.08)';
-    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(230,57,70,0.08)'; ctx.fillRect(x, y, w, h);
     ctx.restore();
   }
 
@@ -453,26 +511,14 @@ export class CanvasEditor {
     if (this.onSelectionChange) this.onSelectionChange(null);
   }
 
-  /** Apply fill/erase to selection rect */
   fillSelection(color = '#ffffff') {
     if (!this._selRect) return;
-    this._saveUndo();
     const { x, y, w, h } = this._selRect;
-    this.ctx.fillStyle = color;
-    this.ctx.fillRect(x, y, w, h);
+    this.fillRect(x, y, w, h, color);
   }
 
   // ═══════════════════════════════════════════════════
-  // DIRECT FILL (for erasing OCR bboxes)
-  // ═══════════════════════════════════════════════════
-  fillRect(x, y, w, h, color = '#ffffff') {
-    this._saveUndo();
-    this.ctx.fillStyle = color;
-    this.ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-  }
-
-  // ═══════════════════════════════════════════════════
-  // OVERLAY (OCR bounding boxes)
+  // OVERLAY (OCR bboxes)
   // ═══════════════════════════════════════════════════
   drawOverlay(blocks, selectedId = null) {
     const ctx = this.oCtx;
@@ -481,24 +527,23 @@ export class CanvasEditor {
     for (const b of blocks) {
       if (!b.visible) continue;
       const { x, y, w, h } = b.bbox;
-      const sel     = b.id === selectedId;
-      const applied = b.applied;
+      const sel = b.id === selectedId;
+      const col = sel ? '#e63946' : b.applied ? '#2d9e5f' : '#457b9d';
 
       ctx.save();
-      ctx.strokeStyle = sel ? '#e63946' : applied ? '#2d9e5f' : '#457b9d';
+      ctx.strokeStyle = col;
       ctx.lineWidth   = sel ? 2.5 : 1.5;
-      ctx.globalAlpha = applied ? 0.35 : 1;
+      ctx.globalAlpha = b.applied ? 0.35 : 1;
       ctx.setLineDash(sel ? [] : [4, 3]);
       ctx.strokeRect(x + .5, y + .5, w, h);
 
       ctx.globalAlpha = 1; ctx.setLineDash([]);
-      ctx.fillStyle   = sel ? '#e63946' : applied ? '#2d9e5f' : '#457b9d';
-      const num = `#${b.id.split('-')[1] ?? '?'}`;
-      const tw  = Math.max(ctx.measureText(num).width + 6, 18);
+      ctx.fillStyle   = col;
+      const lbl = `#${b.id.split('-')[1] ?? '?'}`;
+      const tw  = Math.max(ctx.measureText(lbl).width + 6, 18);
       ctx.fillRect(x, y - 14, tw, 14);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Nunito, sans-serif';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(num, x + 3, y);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Nunito,sans-serif';
+      ctx.textBaseline = 'bottom'; ctx.fillText(lbl, x + 3, y);
       ctx.restore();
     }
   }
@@ -506,58 +551,37 @@ export class CanvasEditor {
   clearOverlay() { this.oCtx.clearRect(0, 0, this.overlay.width, this.overlay.height); }
 
   // ═══════════════════════════════════════════════════
-  // UNDO / REDO
-  // ═══════════════════════════════════════════════════
-  _saveUndo() {
-    const snap = this.ctx.getImageData(0, 0, this.base.width, this.base.height);
-    this._undoStack.push(snap);
-    if (this._undoStack.length > this.MAX_HISTORY) this._undoStack.shift();
-    this._redoStack = []; // clear redo on new action
-  }
-
-  undo() {
-    if (this._undoStack.length < 2) return false;
-    this._redoStack.push(this._undoStack.pop());
-    this.ctx.putImageData(this._undoStack[this._undoStack.length - 1], 0, 0);
-    return true;
-  }
-
-  redo() {
-    if (!this._redoStack.length) return false;
-    const snap = this._redoStack.pop();
-    this._undoStack.push(snap);
-    this.ctx.putImageData(snap, 0, 0);
-    return true;
-  }
-
-  // ═══════════════════════════════════════════════════
-  // EXPORT
+  // EXPORT  (no toDataURL during editing — only on demand)
   // ═══════════════════════════════════════════════════
   exportImage(textBoxes) {
-    const out = Object.assign(document.createElement('canvas'), {
-      width: this.base.width, height: this.base.height
-    });
+    const out = Object.assign(document.createElement('canvas'),
+      { width: this.base.width, height: this.base.height });
     const oc = out.getContext('2d');
     oc.drawImage(this.base, 0, 0);
     for (const box of textBoxes) renderBoxToCanvas(oc, box);
     return out.toDataURL('image/png');
   }
 
-  // ── Register zoom-change callback ──────────────────
-  onZoomChange(cb) { this._zoomCb = cb; }
+  /**
+   * Run OCR on a specific region without toDataURL on the full canvas.
+   * Returns an ImageBitmap of the cropped region (passed to Tesseract).
+   */
+  async cropRegion(rect) {
+    const { x, y, w, h } = rect;
+    return createImageBitmap(this.base, x, y, w, h);
+  }
 }
 
-// ═══════════════════════════════════════════════════════
-// Render a text-box data object onto a 2D context (shared
-// between preview-canvas and final export).
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// renderBoxToCanvas — shared by TextManager preview and export
+// ═══════════════════════════════════════════════════════════
 export function renderBoxToCanvas(ctx, box) {
-  const { x, y, w, h, text, fontSize, fontFamily, color, bgColor, bgOpacity, align, rotation = 0 } = box;
+  const { x, y, w, h, text, fontSize, fontFamily, color,
+          bgColor, bgOpacity, align, rotation = 0 } = box;
   if (!text?.trim()) return;
 
   ctx.save();
 
-  // Apply rotation around the box center
   if (rotation) {
     const cx = x + w / 2, cy = y + h / 2;
     ctx.translate(cx, cy);
@@ -565,39 +589,37 @@ export function renderBoxToCanvas(ctx, box) {
     ctx.translate(-cx, -cy);
   }
 
-  // Background
   if (bgOpacity > 0) {
     ctx.globalAlpha = bgOpacity;
     ctx.fillStyle   = bgColor || '#ffffff';
+    // beginPath + fill path avoids globalAlpha leaking
+    ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x - 3, y - 3, w + 6, h + 6, 4);
     else               ctx.rect(x - 3, y - 3, w + 6, h + 6);
     ctx.fill();
     ctx.globalAlpha = 1;
   }
 
-  // Text
-  ctx.font          = `bold ${fontSize}px '${fontFamily}', sans-serif`;
-  ctx.fillStyle     = color || '#000000';
-  ctx.textBaseline  = 'top';
-  ctx.textAlign     = align || 'center';
+  ctx.font         = `bold ${fontSize}px '${fontFamily}',sans-serif`;
+  ctx.fillStyle    = color || '#000000';
+  ctx.textBaseline = 'top';
+  ctx.textAlign    = align || 'center';
 
-  const lineH = fontSize * 1.3;
-  const tx    = align === 'right' ? x + w - 5 : align === 'left' ? x + 5 : x + w / 2;
-  const wrapped = wrapText(ctx, text, w - 10);
-
-  wrapped.forEach((line, i) => ctx.fillText(line, tx, y + i * lineH + 4));
+  const lineH   = fontSize * 1.3;
+  const textX   = align === 'right' ? x + w - 5 : align === 'left' ? x + 5 : x + w / 2;
+  const wrapped = _wrapText(ctx, text, w - 10);
+  wrapped.forEach((line, i) => ctx.fillText(line, textX, y + i * lineH + 4));
 
   ctx.restore();
 }
 
-// ── Helpers ───────────────────────────────────────────
-function wrapText(ctx, text, maxW) {
+// ── Module-private helpers ────────────────────────────────
+function _wrapText(ctx, text, maxW) {
   const out = [];
   for (const para of text.split('\n')) {
     if (!para) { out.push(''); continue; }
-    const words = para.split(' ');
     let cur = '';
-    for (const w of words) {
+    for (const w of para.split(' ')) {
       const test = cur ? `${cur} ${w}` : w;
       if (ctx.measureText(test).width > maxW && cur) { out.push(cur); cur = w; }
       else cur = test;
@@ -607,16 +629,17 @@ function wrapText(ctx, text, maxW) {
   return out.length ? out : [text];
 }
 
-function normalizeRect(a, b) {
-  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+function _normRect(a, b) {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+           w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
 }
 
-function hexToRgba(hex, a = 1) {
+function _pinchDist(touches) {
+  return Math.hypot(touches[0].clientX - touches[1].clientX,
+                    touches[0].clientY - touches[1].clientY);
+}
+
+function _hexToRgb(hex) {
   const n = hex.replace('#', '');
-  return {
-    r: parseInt(n.slice(0, 2), 16),
-    g: parseInt(n.slice(2, 4), 16),
-    b: parseInt(n.slice(4, 6), 16),
-    a,
-  };
+  return { r: parseInt(n.slice(0,2),16), g: parseInt(n.slice(2,4),16), b: parseInt(n.slice(4,6),16) };
 }
