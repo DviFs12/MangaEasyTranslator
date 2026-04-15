@@ -3,17 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MangaEasyTranslator</title>
+  <title>MangaEasyTranslator v5</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;900&family=Anton&family=Oswald:wght@400;700&family=Permanent+Marker&family=Bebas+Neue&family=Comic+Neue:wght@700&family=Noto+Sans+JP&display=swap" rel="stylesheet" />
 
-  <!--
-    Tesseract.js v4.x via CDN clássico (não ESM).
-    v4 usa: createWorker() → loadLanguage() → initialize()
-    v5 mudou a API novamente, por isso fixamos em v4.1.4 que é estável.
-  -->
+  <!-- Tesseract.js v4 (script clássico → window.Tesseract) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
+
+  <!-- OpenCV.js 4.x — carregado de forma assíncrona, não bloqueia o parse -->
+  <script async src="https://docs.opencv.org/4.8.0/opencv.js" id="opencv-script"></script>
 
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -24,10 +23,14 @@
     <div class="logo">
       <span class="logo-icon">📖</span>
       <span class="logo-text">Manga<span class="accent">Easy</span>Translator</span>
+      <span class="version-badge">v5</span>
     </div>
     <div class="header-actions">
-      <button id="btn-new" class="btn btn-ghost" title="Carregar nova imagem">↺ Nova</button>
-      <button id="btn-export" class="btn btn-primary" disabled title="Exportar imagem final">⬇ Exportar PNG</button>
+      <button id="btn-save-project" class="btn btn-ghost" title="Salvar projeto (.met)">💾 Salvar</button>
+      <button id="btn-load-project" class="btn btn-ghost" title="Carregar projeto (.met)">📂 Carregar</button>
+      <input id="project-file-input" type="file" accept=".met,.json" style="display:none" />
+      <button id="btn-new"    class="btn btn-ghost">↺ Nova</button>
+      <button id="btn-export" class="btn btn-primary" disabled>⬇ Exportar PNG</button>
     </div>
   </div>
 </header>
@@ -46,9 +49,7 @@
 
 <main class="app-layout">
 
-  <!-- ═══════════════════════════════════════════
-       LEFT PANEL — TOOLS
-  ═══════════════════════════════════════════ -->
+  <!-- ═══ LEFT PANEL ═══ -->
   <aside class="panel panel-left" id="panel-left">
 
     <!-- OCR -->
@@ -63,7 +64,19 @@
           <option value="kor">Coreano</option>
         </select>
       </div>
-      <button id="btn-run-ocr" class="btn btn-accent w-full" disabled>🔍 Detectar Texto</button>
+      <div class="tool-group">
+        <label class="tool-label">PSM (modo de segmentação)</label>
+        <select id="ocr-psm" class="tool-select">
+          <option value="11">11 — Sparse (mangá, padrão)</option>
+          <option value="3">3 — Auto</option>
+          <option value="6">6 — Bloco único</option>
+          <option value="7">7 — Linha única</option>
+        </select>
+      </div>
+      <div class="btn-row" style="gap:4px">
+        <button id="btn-run-ocr"      class="btn btn-accent flex-1" disabled>🔍 OCR</button>
+        <button id="btn-detect-balloons" class="btn btn-sm" disabled title="Detectar balões com OpenCV">🫧 Balões</button>
+      </div>
       <div id="ocr-status" class="status-box hidden"></div>
     </section>
 
@@ -83,24 +96,48 @@
       <div id="trans-status" class="status-box hidden"></div>
     </section>
 
-    <!-- FERRAMENTAS DE DESENHO -->
+    <!-- FERRAMENTAS -->
     <section class="tool-section">
       <h3 class="tool-title">🛠 Ferramentas</h3>
       <div class="tool-grid">
         <button class="tool-btn" data-tool="brush"     title="Pincel (B)">🖌 Pincel</button>
         <button class="tool-btn" data-tool="eraser"    title="Borracha (E)">⬜ Borracha</button>
         <button class="tool-btn" data-tool="blur"      title="Blur (U)">💧 Blur</button>
+        <button class="tool-btn" data-tool="inpaint"   title="Inpaint (I)">🪄 Inpaint</button>
         <button class="tool-btn" data-tool="fill"      title="Preenchimento (F)">🪣 Fill</button>
         <button class="tool-btn" data-tool="clone"     title="Clone Stamp (C)">🔁 Clone</button>
-        <button class="tool-btn" data-tool="selection" title="Seleção Retang. (S)">⬡ Seleção</button>
+        <button class="tool-btn" data-tool="selection" title="Seleção (S)">⬡ Seleção</button>
+        <button class="tool-btn" data-tool="text-box"  title="Nova caixa de texto (T)">📝 TextBox</button>
       </div>
-      <div id="tool-options" class="tool-options">
-        <!-- Populated by JS based on active tool -->
+      <div id="tool-options" class="tool-options"></div>
+      <div class="btn-row" style="margin-top:5px">
+        <button id="btn-undo"      class="btn btn-sm">↩</button>
+        <button id="btn-redo"      class="btn btn-sm">↪</button>
+        <button id="btn-clear-sel" class="btn btn-sm hidden">✕ Sel</button>
+        <button id="btn-apply-inpaint-sel" class="btn btn-sm hidden">🪄 Inpaint Sel</button>
       </div>
-      <div class="btn-row" style="margin-top:6px">
-        <button id="btn-undo" class="btn btn-sm">↩ Desfazer</button>
-        <button id="btn-redo" class="btn btn-sm">↪ Refazer</button>
-        <button id="btn-clear-sel" class="btn btn-sm hidden">✕ Sel.</button>
+    </section>
+
+    <!-- CAMADAS -->
+    <section class="tool-section">
+      <h3 class="tool-title">🗂 Camadas</h3>
+      <div id="layers-panel" class="layers-list">
+        <div class="layer-item active" data-layer="base">
+          <span class="layer-eye" data-layer="base">👁</span>
+          <span class="layer-name">🖼 Imagem Base</span>
+        </div>
+        <div class="layer-item active" data-layer="inpaint">
+          <span class="layer-eye" data-layer="inpaint">👁</span>
+          <span class="layer-name">🪄 Inpaint</span>
+        </div>
+        <div class="layer-item active" data-layer="text">
+          <span class="layer-eye" data-layer="text">👁</span>
+          <span class="layer-name">📝 Texto Traduzido</span>
+        </div>
+        <div class="layer-item active" data-layer="overlay">
+          <span class="layer-eye" data-layer="overlay">👁</span>
+          <span class="layer-name">🔲 Bounding Boxes</span>
+        </div>
       </div>
     </section>
 
@@ -115,7 +152,7 @@
         <button id="btn-fit"        class="btn btn-sm">⊡ Ajustar</button>
         <button id="btn-zoom-reset" class="btn btn-sm">1:1</button>
       </div>
-      <p class="tip-text">🖱 Scroll=zoom · Drag=mover<br>Botão do meio / Alt+drag = pan</p>
+      <p class="tip-text">🖱 Scroll=zoom · Drag=mover · Alt+drag=pan</p>
     </section>
 
     <!-- TEXTO MANUAL -->
@@ -125,7 +162,7 @@
       <button id="btn-add-text" class="btn btn-accent w-full" disabled>+ Adicionar ao Canvas</button>
     </section>
 
-    <!-- EDITAR CAIXA SELECIONADA -->
+    <!-- EDITAR CAIXA -->
     <section class="tool-section" id="box-editor" style="display:none">
       <h3 class="tool-title">📦 Editar Caixa</h3>
       <div class="tool-group">
@@ -135,16 +172,7 @@
       <div class="tool-row">
         <div class="tool-group flex-1">
           <label class="tool-label">Fonte</label>
-          <select id="box-font-family" class="tool-select">
-            <option value="Bangers">Bangers</option>
-            <option value="Anton">Anton</option>
-            <option value="Oswald">Oswald</option>
-            <option value="Bebas Neue">Bebas Neue</option>
-            <option value="Permanent Marker">P.Marker</option>
-            <option value="Comic Neue">Comic Neue</option>
-            <option value="Nunito">Nunito</option>
-            <option value="Arial">Arial</option>
-          </select>
+          <select id="box-font-family" class="tool-select"></select>
         </div>
         <div class="tool-group" style="width:56px">
           <label class="tool-label">Tam.</label>
@@ -153,7 +181,7 @@
       </div>
       <div class="tool-row">
         <div class="tool-group">
-          <label class="tool-label">Cor texto</label>
+          <label class="tool-label">Cor</label>
           <input type="color" id="box-color" value="#000000" class="tool-color" />
         </div>
         <div class="tool-group">
@@ -168,26 +196,27 @@
       <div class="tool-group">
         <label class="tool-label">Alinhamento</label>
         <div class="btn-row">
-          <button class="btn btn-sm align-btn" data-align="left">⬅ Esq</button>
-          <button class="btn btn-sm align-btn active" data-align="center">↔ Cen</button>
-          <button class="btn btn-sm align-btn" data-align="right">➡ Dir</button>
+          <button class="btn btn-sm align-btn" data-align="left">⬅</button>
+          <button class="btn btn-sm align-btn active" data-align="center">↔</button>
+          <button class="btn btn-sm align-btn" data-align="right">➡</button>
         </div>
       </div>
       <div class="tool-group">
         <label class="tool-label">Rotação: <span id="box-rotation-val">0</span>°</label>
         <input type="range" id="box-rotation" min="-180" max="180" value="0" class="tool-range" />
       </div>
-      <button id="btn-delete-box" class="btn btn-danger w-full">🗑 Remover Caixa</button>
+      <div class="btn-row">
+        <button id="btn-ocr-box"    class="btn btn-sm flex-1" title="OCR nesta caixa">🔍 OCR</button>
+        <button id="btn-inpaint-box" class="btn btn-sm flex-1" title="Inpaint na área desta caixa">🪄 Inpaint</button>
+        <button id="btn-delete-box" class="btn btn-danger" style="padding:4px 8px">🗑</button>
+      </div>
     </section>
 
   </aside>
 
-  <!-- ═══════════════════════════════════════════
-       CENTER — CANVAS AREA
-  ═══════════════════════════════════════════ -->
+  <!-- ═══ CENTER CANVAS ═══ -->
   <div class="canvas-viewport" id="canvas-viewport">
 
-    <!-- Drop zone (visible before image loaded) -->
     <div class="drop-zone" id="drop-zone">
       <div class="drop-content">
         <div class="drop-icon">🗒️</div>
@@ -195,28 +224,23 @@
         <p class="drop-sub">ou clique para selecionar</p>
         <button class="btn btn-primary btn-lg" id="btn-select-file">Selecionar Imagem</button>
         <p class="drop-hint">JPG · PNG · WebP</p>
+        <p class="drop-hint" style="font-size:.72rem;margin-top:4px">ou <a href="#" id="link-load-project" style="color:var(--c-accent2)">carregar projeto .met</a></p>
       </div>
       <input type="file" id="file-input" accept="image/*" style="display:none" />
     </div>
 
-    <!-- Stage: captures events, never scrolls -->
     <div class="canvas-stage" id="canvas-stage" style="display:none">
-      <!-- World: moves with pan+zoom via CSS transform -->
       <div class="canvas-world" id="canvas-world">
-        <!-- Layer 0: base image + brush strokes -->
-        <canvas id="base-canvas"></canvas>
-        <!-- Layer 1: selection rectangle -->
-        <canvas id="selection-canvas"></canvas>
-        <!-- Layer 2: OCR bounding boxes (non-destructive) -->
-        <canvas id="overlay-canvas"></canvas>
-        <!-- Layer 3: live preview of text boxes rendered to canvas -->
-        <canvas id="preview-canvas"></canvas>
-        <!-- Layer 4: DOM text boxes for interactive editing -->
-        <div id="text-layer"></div>
+        <!-- Layer stack (bottom → top) -->
+        <canvas id="base-canvas"></canvas>       <!-- 0: imagem + brush -->
+        <canvas id="inpaint-canvas"></canvas>    <!-- 1: inpaint layer -->
+        <canvas id="selection-canvas"></canvas>  <!-- 2: seleção efêmera -->
+        <canvas id="overlay-canvas"></canvas>    <!-- 3: bboxes OCR -->
+        <canvas id="preview-canvas"></canvas>    <!-- 4: preview texto -->
+        <div    id="text-layer"></div>           <!-- 5: DOM text boxes -->
       </div>
     </div>
 
-    <!-- Spinner overlay -->
     <div class="loading-overlay" id="loading-overlay" style="display:none">
       <div class="loading-card">
         <div class="spinner"></div>
@@ -228,16 +252,17 @@
 
   </div>
 
-  <!-- ═══════════════════════════════════════════
-       RIGHT PANEL — BLOCKS
-  ═══════════════════════════════════════════ -->
+  <!-- ═══ RIGHT PANEL — BLOCKS ═══ -->
   <aside class="panel panel-right" id="panel-right">
     <div class="panel-header">
-      <h3 class="tool-title">📋 Blocos de Texto</h3>
-      <span class="badge" id="block-count">0</span>
+      <h3 class="tool-title">📋 Blocos</h3>
+      <div style="display:flex;gap:4px;align-items:center">
+        <span class="badge" id="block-count">0</span>
+        <button id="btn-merge-blocks" class="btn btn-sm" title="Mesclar blocos selecionados" style="display:none">⊕</button>
+      </div>
     </div>
     <div id="blocks-list" class="blocks-list">
-      <p class="empty-hint">Faça upload e rode o OCR para ver os blocos aqui.</p>
+      <p class="empty-hint">Faça upload e rode o OCR.</p>
     </div>
   </aside>
 

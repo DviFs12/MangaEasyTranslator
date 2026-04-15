@@ -69,7 +69,7 @@ function waitForTesseract(ms = 15000) {
  * @param {(pct,msg)=>void} onProgress
  * @returns {Promise<OcrBlock[]>}
  */
-export async function runOCR(canvas, lang = 'jpn', onProgress = () => {}) {
+export async function runOCR(canvas, lang = 'jpn', onProgress = () => {}, psm = '11') {
   const T = await waitForTesseract();
 
   onProgress(5, 'Iniciando Tesseract…');
@@ -82,8 +82,8 @@ export async function runOCR(canvas, lang = 'jpn', onProgress = () => {}) {
     else if (m.status === 'recognizing text')       onProgress(22 + Math.round(m.progress * 68), 'Reconhecendo…');
   });
 
-  // PSM 11 = sparse text (melhor para mangá com múltiplos balões)
-  await worker.setParameters({ tessedit_pageseg_mode: '11' });
+  // PSM configurable: default 11 = sparse text (best for manga with multiple balloons)
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
 
   onProgress(22, 'Analisando imagem…');
 
@@ -110,7 +110,7 @@ export async function runOCR(canvas, lang = 'jpn', onProgress = () => {}) {
  * @param {(pct,msg)=>void} onProgress
  * @returns {Promise<OcrBlock>}  — único bloco com o texto da região
  */
-export async function runOCRRegion(canvas, rect, lang = 'jpn', onProgress = () => {}) {
+export async function runOCRRegion(canvas, rect, lang = 'jpn', onProgress = () => {}, psm = '6') {
   const T = await waitForTesseract();
 
   onProgress(10, 'OCR da região…');
@@ -120,8 +120,8 @@ export async function runOCRRegion(canvas, rect, lang = 'jpn', onProgress = () =
       onProgress(20 + Math.round(m.progress * 70), 'Reconhecendo região…');
   });
 
-  // PSM 6 = uniform block — melhor para regiões pequenas
-  await worker.setParameters({ tessedit_pageseg_mode: '6' });
+  // PSM configurable: default 6 = uniform block (best for isolated regions)
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
 
   // Recortar região sem toDataURL do canvas completo:
   // 1. Criar canvas temporário do tamanho da região
