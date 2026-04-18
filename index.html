@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MangaEasyTranslator v6</title>
+  <title>MangaEasyTranslator v7</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <!--
@@ -14,8 +14,6 @@
 
   <!-- Tesseract.js v4 (script clássico → window.Tesseract) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
-  <!-- OpenCV.js — async, não bloqueia -->
-  <script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
 
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -26,7 +24,7 @@
     <div class="logo">
       <span class="logo-icon">📖</span>
       <span class="logo-text">Manga<span class="accent">Easy</span>Translator</span>
-      <span class="version-badge">v6</span>
+      <span class="version-badge">v7</span>
     </div>
     <div class="header-actions">
       <button id="btn-save-project" class="btn btn-ghost" title="Salvar projeto (Ctrl+S)">💾 Salvar</button>
@@ -94,8 +92,7 @@
         </select>
       </div>
       <div class="btn-row" style="gap:4px">
-        <button id="btn-run-ocr"         class="btn btn-accent flex-1" disabled>🔍 OCR Página</button>
-        <button id="btn-detect-balloons" class="btn btn-sm" disabled title="Detectar balões">🫧</button>
+        <button id="btn-run-ocr" class="btn btn-accent w-full" disabled>🔍 OCR Página</button>
       </div>
       <div id="ocr-status" class="status-box hidden"></div>
     </section>
@@ -316,7 +313,7 @@
       </div>
     </div>
     <div id="blocks-list" class="blocks-list">
-      <p class="empty-hint">Rode o OCR ou adicione blocos manualmente.</p>
+      <p class="empty-hint">Rode o OCR ou adicione blocos (+) manualmente.</p>
     </div>
   </aside>
 

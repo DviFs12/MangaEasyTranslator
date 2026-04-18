@@ -491,17 +491,9 @@ export class CanvasEditor {
   }
 
   // ═══════════════════════ OVERLAY ═════════════════════════
-  drawOverlay(blocks, selectedId=null, balloons=[]) {
+  drawOverlay(blocks, selectedId = null) {
     const ctx = this.oCtx;
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
-
-    for (const b of balloons) {
-      ctx.save();
-      ctx.strokeStyle='rgba(244,162,97,0.6)';
-      ctx.lineWidth=1.5; ctx.setLineDash([6,4]);
-      ctx.strokeRect(b.x+.5,b.y+.5,b.w,b.h);
-      ctx.restore();
-    }
 
     for (const b of blocks) {
       if (!b.visible) continue;
