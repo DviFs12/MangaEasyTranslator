@@ -211,3 +211,33 @@ body{font-family:var(--font);background:var(--c-paper);color:var(--c-ink);height
 .hidden{display:none!important}
 
 @media(max-width:960px){:root{--panel-w:192px;--panel-r:0px}.panel-right{display:none}}
+
+/* ── v8 additions ─────────────────────────────────────── */
+.btn-lang {
+  font-size:.75rem;
+  padding:4px 10px;
+  border:1.5px solid var(--c-accent2);
+  color:var(--c-accent2);
+  border-radius:var(--radius);
+  font-weight:700;
+  letter-spacing:.02em;
+  transition:background .15s,color .15s;
+}
+.btn-lang:hover {
+  background:var(--c-accent2);
+  color:#fff;
+}
+
+/* Ferramenta Linha OCR — destaque visual */
+.tool-btn-highlight {
+  border:1.5px solid #f4a261 !important;
+  color:#c75a0c !important;
+}
+.tool-btn-highlight.active,
+.tool-btn-highlight:hover {
+  background:#f4a261 !important;
+  color:#fff !important;
+}
+
+/* Cursor para ferramenta stroke */
+.canvas-stage.tool-stroke { cursor: crosshair; }

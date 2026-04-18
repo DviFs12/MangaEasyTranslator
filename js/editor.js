@@ -1,14 +1,20 @@
 /**
- * editor.js — v6
+ * editor.js — v8
  *
- * Novidades vs v5:
- *  • Seleção rotacionável: _selAngle (deg) aplicado ao retângulo de seleção
- *    via ctx.rotate(). OCR recebe ImageBitmap recortado da região rotacionada.
- *  • Ferramenta Laço (lasso): seleção livre de forma poligonal.
- *    Acumula pontos → clipPath → OCR na bbox + máscara.
- *  • drawOverlay melhorado: renderiza ângulo de seleção e lasso path.
- *  • clearSelection reseta ângulo.
- *  • getRotatedCrop(rect, angle) → canvas recortado e des-rotacionado.
+ * Novidades vs v7:
+ *  1. Ferramenta "stroke" (Linha OCR):
+ *     Usuário desenha uma linha sobre o texto. O sistema detecta o ângulo
+ *     da linha, expande uma bbox perpendicular, extrai o crop des-rotacionado
+ *     e dispara OCR. onSelectionChange recebe { rect, angle, points }, tool='stroke'.
+ *
+ *  2. getLassoMaskedCrop(points) → canvas:
+ *     Novo método que aplica máscara real do polígono do laço antes de enviar
+ *     para OCR. Pixels fora do polígono ficam brancos (fundo Tesseract).
+ *     Substitui o antigo runOCRRegion simples que usava apenas a bbox.
+ *
+ *  3. getStrokeCrop(p1, p2, thickness) → { canvas, angle, rect }:
+ *     Extrai uma faixa ao redor da linha desenhada, des-rotacionada para
+ *     que o Tesseract receba texto horizontal.
  */
 
 export class CanvasEditor {
@@ -36,14 +42,19 @@ export class CanvasEditor {
 
     this._cloneSource = null; this._cloneSet = false; this._cloneOffset = null;
 
-    // Selection
-    this._selStart  = null;
-    this._selRect   = null;   // {x,y,w,h} in canvas coords
-    this._selAngle  = 0;      // degrees, set by toolbar slider
+    // Rect selection
+    this._selStart = null;
+    this._selRect  = null;
+    this._selAngle = 0;
 
     // Lasso
-    this._lassoPoints = [];   // [{x,y}] in canvas coords
+    this._lassoPoints = [];
     this._lassoActive = false;
+
+    // Stroke tool (line OCR)
+    this._strokeStart  = null;
+    this._strokeEnd    = null;
+    this._strokeActive = false;
 
     this._drawing = false; this._lastPt = null;
 
@@ -56,7 +67,7 @@ export class CanvasEditor {
     this._blurOff = document.createElement('canvas');
 
     this.onToolChange      = null;
-    this.onSelectionChange = null;  // (data, tool) data = {rect,angle} or {points}
+    this.onSelectionChange = null;
     this._zoomCb           = null;
 
     this._bindEvents();
@@ -118,7 +129,6 @@ export class CanvasEditor {
   setToolColor(c){this.toolColor=c;}
 
   // ═══════════════════════ SELECTION ANGLE ════════════════
-  /** Set selection rotation angle (degrees). Redraws selection overlay. */
   setSelAngle(deg) {
     this._selAngle = deg;
     if (this._selRect) this._drawSelOverlay();
@@ -172,6 +182,12 @@ export class CanvasEditor {
         this._drawing=true; return;
       }
 
+      // ── Stroke tool: mousedown starts line, mouseup fires OCR ──────────
+      if(this.activeTool==='stroke'){
+        this._strokeStart=pt; this._strokeEnd=pt;
+        this._strokeActive=true; this._drawing=true; return;
+      }
+
       if(this.activeTool==='clone'){
         if(!this._cloneSet||e.ctrlKey){
           this._cloneSource=pt; this._cloneSet=true; this._cloneOffset=null;
@@ -201,8 +217,12 @@ export class CanvasEditor {
       }
 
       if(this.activeTool==='lasso'&&this._lassoActive){
-        // Preview last segment
         this._drawSelOverlay(pt); return;
+      }
+
+      if(this.activeTool==='stroke'&&this._strokeActive){
+        this._strokeEnd=pt;
+        this._drawSelOverlay(); return;
       }
 
       this._doStroke(this._lastPt,pt); this._lastPt=pt;
@@ -212,32 +232,43 @@ export class CanvasEditor {
       if(this._panning){this._panning=false;s.classList.remove('is-panning');}
       if(this._drawing){
         this._drawing=false;
+
         if((this.activeTool==='selection'||this.activeTool==='text-box')&&this._selRect){
           if(this.onSelectionChange) this.onSelectionChange(
             {rect:this._selRect, angle:this._selAngle}, this.activeTool);
         }
-        // Lasso: double-click or right-click to close
+
+        // ── Stroke: commit on mouseup ─────────────────────────────────
+        if(this.activeTool==='stroke'&&this._strokeActive&&this._strokeStart&&this._strokeEnd){
+          const dx = this._strokeEnd.x - this._strokeStart.x;
+          const dy = this._strokeEnd.y - this._strokeStart.y;
+          const len = Math.hypot(dx, dy);
+          if (len > 8) {
+            this._strokeActive = false;
+            const { rect, angle } = _strokeBbox(this._strokeStart, this._strokeEnd, 60);
+            if (this.onSelectionChange) this.onSelectionChange(
+              { rect, angle, points: [this._strokeStart, this._strokeEnd] }, 'stroke');
+          } else {
+            this._strokeStart = null; this._strokeEnd = null; this._strokeActive = false;
+            this.sCtx.clearRect(0, 0, this.selection.width, this.selection.height);
+          }
+        }
+
         this._closeCmd();
       }
     });
 
-    // Double-click closes lasso
+    // Double-click or right-click closes lasso
     s.addEventListener('dblclick',(e)=>{
       if(this.activeTool==='lasso'&&this._lassoActive&&this._lassoPoints.length>2){
-        this._lassoActive=false;
-        const bbox=_lassoBbox(this._lassoPoints);
-        if(this.onSelectionChange) this.onSelectionChange(
-          {rect:bbox, points:this._lassoPoints, angle:0}, 'lasso');
+        this._closeLasso();
       }
     });
 
     s.addEventListener('contextmenu',(e)=>{
       e.preventDefault();
       if(this.activeTool==='lasso'&&this._lassoActive&&this._lassoPoints.length>2){
-        this._lassoActive=false;
-        const bbox=_lassoBbox(this._lassoPoints);
-        if(this.onSelectionChange) this.onSelectionChange(
-          {rect:bbox, points:this._lassoPoints, angle:0}, 'lasso');
+        this._closeLasso();
       }
     });
 
@@ -269,6 +300,13 @@ export class CanvasEditor {
     },{passive:false});
 
     s.addEventListener('touchend',()=>{this._panning=false;this._drawing=false;s.classList.remove('is-panning');lp=0;this._closeCmd();});
+  }
+
+  _closeLasso() {
+    this._lassoActive = false;
+    const bbox = _lassoBbox(this._lassoPoints);
+    if (this.onSelectionChange) this.onSelectionChange(
+      { rect: bbox, points: [...this._lassoPoints], angle: 0 }, 'lasso');
   }
 
   _startPan(x,y){this._panning=true;this._panStart={x,y};this._panOrigin={x:this.tx,y:this.ty};this.stage.classList.add('is-panning');}
@@ -391,44 +429,119 @@ export class CanvasEditor {
   }
   clearInpaintLayer(){this.iCtx.clearRect(0,0,this.inpaint.width,this.inpaint.height);}
 
+  // ═══════════════════════ LASSO — máscara real ════════════
   /**
-   * Returns a canvas with the rotated selection crop — properly de-rotated
-   * so Tesseract receives upright text.
-   * @param {{x,y,w,h}} rect  canvas coords
-   * @param {number} angle    degrees
+   * getLassoMaskedCrop(points) → HTMLCanvasElement
+   *
+   * Extrai o crop da bbox do laço, mas aplica a máscara real do polígono:
+   * pixels fora do laço ficam brancos (fundo = Tesseract lê melhor).
+   * Isso garante que texto de balões adjacentes não contamine o OCR.
+   *
+   * @param {Array<{x,y}>} points  polígono em coordenadas de canvas
    * @returns {HTMLCanvasElement}
    */
+  getLassoMaskedCrop(points) {
+    const bbox   = _lassoBbox(points);
+    const { x, y, w, h } = bbox;
+    const cw = Math.max(1, Math.ceil(w));
+    const ch = Math.max(1, Math.ceil(h));
+
+    const out = document.createElement('canvas');
+    out.width  = cw;
+    out.height = ch;
+    const ctx  = out.getContext('2d');
+
+    // 1. Fundo branco
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // 2. Clip com o polígono do laço (offset pela bbox origin)
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(points[0].x - x, points[0].y - y);
+    for (let i = 1; i < points.length; i++)
+      ctx.lineTo(points[i].x - x, points[i].y - y);
+    ctx.closePath();
+    ctx.clip();
+
+    // 3. Desenha apenas a região da imagem base dentro do clip
+    ctx.drawImage(this.base, x, y, w, h, 0, 0, cw, ch);
+    ctx.restore();
+
+    return out;
+  }
+
+  // ═══════════════════════ STROKE — faixa de linha ════════
+  /**
+   * getStrokeCrop(p1, p2, thickness) → { canvas, angle, rect }
+   *
+   * Extrai uma faixa ao redor da linha p1→p2 com altura = thickness,
+   * des-rotacionada para que o Tesseract receba texto horizontal.
+   * O canvas de saída tem largura = comprimento da linha, altura = thickness.
+   *
+   * @param {{x,y}} p1
+   * @param {{x,y}} p2
+   * @param {number} thickness  altura da faixa em px (default 80)
+   */
+  getStrokeCrop(p1, p2, thickness = 80) {
+    const dx    = p2.x - p1.x;
+    const dy    = p2.y - p1.y;
+    const len   = Math.hypot(dx, dy);
+    const angle = Math.atan2(dy, dx);  // radians, linha em relação ao eixo X
+    const deg   = angle * 180 / Math.PI;
+
+    const cx = (p1.x + p2.x) / 2;
+    const cy = (p1.y + p2.y) / 2;
+    const outW = Math.ceil(len);
+    const outH = thickness;
+
+    const out = document.createElement('canvas');
+    out.width  = outW;
+    out.height = outH;
+    const ctx  = out.getContext('2d');
+
+    // Fundo branco
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outW, outH);
+
+    // Transforma: center na origem, des-rotaciona, centraliza no canvas de saída
+    ctx.save();
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate(-angle);
+    ctx.drawImage(this.base, cx - outW / 2 * 1.2, cy - outH / 2,
+                              outW * 1.2, outH,
+                             -outW / 2 * 1.2, -outH / 2, outW * 1.2, outH);
+    ctx.restore();
+
+    // Gera bbox na imagem original correspondente à faixa
+    const rect = _strokeBbox(p1, p2, thickness).rect;
+
+    return { canvas: out, angle: deg, rect };
+  }
+
+  // ═══════════════════════ ROTATED CROP ═══════════════════
   getRotatedCrop(rect, angle) {
     const { x, y, w, h } = rect;
     if (!angle) {
-      // Fast path: no rotation
       const out = Object.assign(document.createElement('canvas'), { width: Math.ceil(w), height: Math.ceil(h) });
       out.getContext('2d').drawImage(this.base, x, y, w, h, 0, 0, w, h);
       return out;
     }
-
     const rad = angle * Math.PI / 180;
     const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
-    // Size of rotated bounding box
     const rw = Math.ceil(w * cos + h * sin);
     const rh = Math.ceil(w * sin + h * cos);
-
-    // Step 1: cut region with padding
     const PAD = Math.ceil(Math.max(w, h) * 0.15);
     const sx  = Math.max(0, x - PAD), sy = Math.max(0, y - PAD);
     const sw  = Math.min(w + PAD * 2, this.base.width  - sx);
     const sh  = Math.min(h + PAD * 2, this.base.height - sy);
-
     const tmp = Object.assign(document.createElement('canvas'), { width: sw, height: sh });
     tmp.getContext('2d').drawImage(this.base, sx, sy, sw, sh, 0, 0, sw, sh);
-
-    // Step 2: rotate and crop to original rect size
     const out = Object.assign(document.createElement('canvas'), { width: rw, height: rh });
     const oc  = out.getContext('2d');
     oc.translate(rw / 2, rh / 2);
-    oc.rotate(-rad); // de-rotate so text is upright
+    oc.rotate(-rad);
     oc.drawImage(tmp, -(sw / 2), -(sh / 2), sw, sh);
-
     return out;
   }
 
@@ -437,7 +550,7 @@ export class CanvasEditor {
     const ctx = this.sCtx;
     ctx.clearRect(0, 0, this.selection.width, this.selection.height);
 
-    // Lasso path
+    // ── Lasso ──────────────────────────────────────────────
     if (this.activeTool === 'lasso' && this._lassoPoints.length > 0) {
       ctx.save();
       ctx.strokeStyle = '#e63946'; ctx.lineWidth = 1.5;
@@ -447,7 +560,6 @@ export class CanvasEditor {
       for (const p of this._lassoPoints) ctx.lineTo(p.x, p.y);
       if (cursorPt) ctx.lineTo(cursorPt.x, cursorPt.y);
       ctx.stroke();
-      // Fill if closed
       if (!cursorPt && this._lassoPoints.length > 2) {
         ctx.closePath();
         ctx.fillStyle = 'rgba(230,57,70,.08)'; ctx.fill();
@@ -456,11 +568,41 @@ export class CanvasEditor {
       return;
     }
 
+    // ── Stroke tool: linha + faixa visualizada ─────────────
+    if (this.activeTool === 'stroke' && this._strokeStart) {
+      const p1 = this._strokeStart;
+      const p2 = this._strokeEnd ?? p1;
+      ctx.save();
+      // Linha principal
+      ctx.strokeStyle = '#f4a261'; ctx.lineWidth = 2.5;
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+      // Ponto inicial
+      ctx.fillStyle = '#f4a261';
+      ctx.beginPath(); ctx.arc(p1.x, p1.y, 5, 0, Math.PI * 2); ctx.fill();
+      // Faixa perpendicular (visualização)
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 4) {
+        const PAD = 30; // meia-espessura da faixa
+        const nx = -dy / len * PAD, ny = dx / len * PAD;
+        ctx.strokeStyle = 'rgba(244,162,97,0.45)'; ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(p1.x + nx, p1.y + ny);
+        ctx.lineTo(p2.x + nx, p2.y + ny);
+        ctx.lineTo(p2.x - nx, p2.y - ny);
+        ctx.lineTo(p1.x - nx, p1.y - ny);
+        ctx.closePath(); ctx.stroke();
+        ctx.fillStyle = 'rgba(244,162,97,0.08)'; ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
+
     if (!this._selRect) return;
     const { x, y, w, h } = this._selRect;
-
     ctx.save();
-    // Apply rotation around selection center
     if (this._selAngle) {
       const cx = x + w / 2, cy = y + h / 2;
       ctx.translate(cx, cy);
@@ -479,29 +621,21 @@ export class CanvasEditor {
   clearSelection() {
     this._selRect = null; this._selStart = null; this._selAngle = 0;
     this._lassoPoints = []; this._lassoActive = false;
+    this._strokeStart = null; this._strokeEnd = null; this._strokeActive = false;
     this.sCtx.clearRect(0, 0, this.selection.width, this.selection.height);
     if (this.onSelectionChange) this.onSelectionChange(null, null);
-  }
-
-  fillSelection(color = '#ffffff') {
-    if (this._selRect) {
-      const { x, y, w, h } = this._selRect;
-      this.fillRect(x, y, w, h, color);
-    }
   }
 
   // ═══════════════════════ OVERLAY ═════════════════════════
   drawOverlay(blocks, selectedId = null) {
     const ctx = this.oCtx;
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
-
     for (const b of blocks) {
       if (!b.visible) continue;
       const { x, y, w, h } = b.bbox;
       const sel = b.id === selectedId;
       const col = sel ? '#e63946' : b.applied ? '#2d9e5f' : b.manual ? '#f4a261' : '#457b9d';
       ctx.save();
-      // Draw rotated bbox if block has an angle
       if (b.angle) {
         const cx = x + w/2, cy = y + h/2;
         ctx.translate(cx, cy); ctx.rotate(b.angle * Math.PI/180); ctx.translate(-cx, -cy);
@@ -570,5 +704,39 @@ function _lassoBbox(pts){
   const x=Math.min(...xs),y=Math.min(...ys);
   return{x,y,w:Math.max(...xs)-x,h:Math.max(...ys)-y};
 }
+
+/**
+ * Calcula a bbox da faixa ao redor da linha p1→p2.
+ * Retorna { rect:{x,y,w,h}, angle:degrees }.
+ * A bbox é o bounding-box axis-aligned da faixa rotacionada.
+ */
+function _strokeBbox(p1, p2, thickness = 80) {
+  const dx  = p2.x - p1.x;
+  const dy  = p2.y - p1.y;
+  const len = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+
+  if (len < 1) return { rect: { x: p1.x - 10, y: p1.y - 10, w: 20, h: 20 }, angle: 0 };
+
+  const ux = dx / len, uy = dy / len;       // unit vector along line
+  const nx = -uy, ny = ux;                  // unit normal (perpendicular)
+  const half = thickness / 2;
+
+  // 4 corners of the strip
+  const corners = [
+    { x: p1.x + nx * half, y: p1.y + ny * half },
+    { x: p1.x - nx * half, y: p1.y - ny * half },
+    { x: p2.x + nx * half, y: p2.y + ny * half },
+    { x: p2.x - nx * half, y: p2.y - ny * half },
+  ];
+
+  const xs = corners.map(c => c.x), ys = corners.map(c => c.y);
+  const bx = Math.min(...xs), by = Math.min(...ys);
+  return {
+    rect:  { x: bx, y: by, w: Math.max(...xs) - bx, h: Math.max(...ys) - by },
+    angle,
+  };
+}
+
 function _pd(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);}
 function _hex2rgb(hex){const n=hex.replace('#','');return{r:parseInt(n.slice(0,2),16),g:parseInt(n.slice(2,4),16),b:parseInt(n.slice(4,6),16)};}

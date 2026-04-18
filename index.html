@@ -3,18 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MangaEasyTranslator v7</title>
+  <title>MangaEasyTranslator v8</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <!--
-    Fontes v6: adicionadas Luckiest Guy, Black Han Sans, Schoolbell,
-    Special Elite, Shadows Into Light, Righteous, Fredoka One, Lilita One
-  -->
   <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;900&family=Anton&family=Oswald:wght@400;700&family=Permanent+Marker&family=Bebas+Neue&family=Comic+Neue:wght@700&family=Noto+Sans+JP&family=Luckiest+Guy&family=Black+Han+Sans&family=Schoolbell&family=Special+Elite&family=Shadows+Into+Light&family=Righteous&family=Fredoka+One&family=Lilita+One&family=Press+Start+2P&display=swap" rel="stylesheet" />
 
-  <!-- Tesseract.js v4 (script clássico → window.Tesseract) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
-
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -24,28 +18,29 @@
     <div class="logo">
       <span class="logo-icon">📖</span>
       <span class="logo-text">Manga<span class="accent">Easy</span>Translator</span>
-      <span class="version-badge">v7</span>
+      <span class="version-badge">v8</span>
     </div>
     <div class="header-actions">
-      <button id="btn-save-project" class="btn btn-ghost" title="Salvar projeto (Ctrl+S)">💾 Salvar</button>
-      <button id="btn-load-project" class="btn btn-ghost" title="Carregar projeto .met">📂 Carregar</button>
+      <button id="btn-lang-toggle" class="btn btn-ghost btn-lang" data-i18n="btn-lang">🌐 EN</button>
+      <button id="btn-save-project" class="btn btn-ghost" title="Ctrl+S" data-i18n="save">💾 Salvar</button>
+      <button id="btn-load-project" class="btn btn-ghost" data-i18n="load">📂 Carregar</button>
       <input id="project-file-input" type="file" accept=".met,.json" style="display:none" />
-      <button id="btn-new"    class="btn btn-ghost">↺ Nova</button>
-      <button id="btn-export" class="btn btn-primary" disabled>⬇ Exportar PNG</button>
+      <button id="btn-new" class="btn btn-ghost" data-i18n="new">↺ Nova</button>
+      <button id="btn-export" class="btn btn-primary" disabled data-i18n="export">⬇ Exportar PNG</button>
     </div>
   </div>
 </header>
 
 <div class="steps-bar">
-  <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-label">Upload</span></div>
+  <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-label" data-i18n="step-upload">Upload</span></div>
   <div class="step-sep">›</div>
-  <div class="step" data-step="2"><span class="step-num">2</span><span class="step-label">OCR</span></div>
+  <div class="step" data-step="2"><span class="step-num">2</span><span class="step-label" data-i18n="step-ocr">OCR</span></div>
   <div class="step-sep">›</div>
-  <div class="step" data-step="3"><span class="step-num">3</span><span class="step-label">Tradução</span></div>
+  <div class="step" data-step="3"><span class="step-num">3</span><span class="step-label" data-i18n="step-translate">Tradução</span></div>
   <div class="step-sep">›</div>
-  <div class="step" data-step="4"><span class="step-num">4</span><span class="step-label">Edição</span></div>
+  <div class="step" data-step="4"><span class="step-num">4</span><span class="step-label" data-i18n="step-edit">Edição</span></div>
   <div class="step-sep">›</div>
-  <div class="step" data-step="5"><span class="step-num">5</span><span class="step-label">Exportar</span></div>
+  <div class="step" data-step="5"><span class="step-num">5</span><span class="step-label" data-i18n="step-export">Exportar</span></div>
 </div>
 
 <main class="app-layout">
@@ -55,9 +50,9 @@
 
     <!-- OCR -->
     <section class="tool-section">
-      <h3 class="tool-title">🔍 OCR</h3>
+      <h3 class="tool-title" data-i18n="sec-ocr">🔍 OCR</h3>
       <div class="tool-group">
-        <label class="tool-label">Idioma de origem</label>
+        <label class="tool-label" data-i18n="lbl-src-lang">Idioma de origem</label>
         <select id="ocr-lang" class="tool-select">
           <optgroup label="Asiático">
             <option value="jpn">Japonês</option>
@@ -83,25 +78,23 @@
         </select>
       </div>
       <div class="tool-group">
-        <label class="tool-label">Modo OCR (PSM)</label>
+        <label class="tool-label" data-i18n="lbl-ocr-mode">Modo OCR (PSM)</label>
         <select id="ocr-psm" class="tool-select">
-          <option value="11">11 — Sparse (mangá)</option>
-          <option value="3">3 — Auto</option>
-          <option value="6">6 — Bloco único</option>
-          <option value="7">7 — Linha única</option>
+          <option value="11" data-i18n="psm-11">11 — Sparse (mangá)</option>
+          <option value="3"  data-i18n="psm-3">3 — Auto</option>
+          <option value="6"  data-i18n="psm-6">6 — Bloco único</option>
+          <option value="7"  data-i18n="psm-7">7 — Linha única</option>
         </select>
       </div>
-      <div class="btn-row" style="gap:4px">
-        <button id="btn-run-ocr" class="btn btn-accent w-full" disabled>🔍 OCR Página</button>
-      </div>
+      <button id="btn-run-ocr" class="btn btn-accent w-full" disabled data-i18n="btn-run-ocr">🔍 OCR Página</button>
       <div id="ocr-status" class="status-box hidden"></div>
     </section>
 
     <!-- TRADUÇÃO -->
     <section class="tool-section">
-      <h3 class="tool-title">🌐 Tradução</h3>
+      <h3 class="tool-title" data-i18n="sec-translate">🌐 Tradução</h3>
       <div class="tool-group">
-        <label class="tool-label">Idioma destino</label>
+        <label class="tool-label" data-i18n="lbl-dst-lang">Idioma destino</label>
         <select id="trans-lang" class="tool-select">
           <option value="pt">Português</option>
           <option value="en">Inglês</option>
@@ -119,23 +112,24 @@
           <option value="ja">Japonês</option>
         </select>
       </div>
-      <button id="btn-translate-all" class="btn btn-accent w-full" disabled>🌐 Traduzir Tudo</button>
+      <button id="btn-translate-all" class="btn btn-accent w-full" disabled data-i18n="btn-translate">🌐 Traduzir Tudo</button>
       <div id="trans-status" class="status-box hidden"></div>
     </section>
 
     <!-- FERRAMENTAS -->
     <section class="tool-section">
-      <h3 class="tool-title">🛠 Ferramentas</h3>
+      <h3 class="tool-title" data-i18n="sec-tools">🛠 Ferramentas</h3>
       <div class="tool-grid">
-        <button class="tool-btn" data-tool="brush"     title="Pincel (B)">🖌 Pincel</button>
-        <button class="tool-btn" data-tool="eraser"    title="Borracha (E)">⬜ Borracha</button>
-        <button class="tool-btn" data-tool="blur"      title="Blur (U)">💧 Blur</button>
-        <button class="tool-btn" data-tool="inpaint"   title="Inpaint (I)">🪄 Inpaint</button>
-        <button class="tool-btn" data-tool="fill"      title="Fill (F)">🪣 Fill</button>
-        <button class="tool-btn" data-tool="clone"     title="Clone (C)">🔁 Clone</button>
-        <button class="tool-btn" data-tool="selection" title="Seleção rect (S)">⬡ Seleção</button>
-        <button class="tool-btn" data-tool="lasso"     title="Laço livre (L)">🔵 Laço</button>
-        <button class="tool-btn" data-tool="text-box"  title="Caixa de texto (T)">📝 TextBox</button>
+        <button class="tool-btn" data-tool="brush"     title="B" data-i18n="tool-brush">🖌 Pincel</button>
+        <button class="tool-btn" data-tool="eraser"    title="E" data-i18n="tool-eraser">⬜ Borracha</button>
+        <button class="tool-btn" data-tool="blur"      title="U" data-i18n="tool-blur">💧 Blur</button>
+        <button class="tool-btn" data-tool="inpaint"   title="I" data-i18n="tool-inpaint">🪄 Inpaint</button>
+        <button class="tool-btn" data-tool="fill"      title="F" data-i18n="tool-fill">🪣 Fill</button>
+        <button class="tool-btn" data-tool="clone"     title="C" data-i18n="tool-clone">🔁 Clone</button>
+        <button class="tool-btn" data-tool="selection" title="S" data-i18n="tool-selection">⬡ Seleção</button>
+        <button class="tool-btn" data-tool="lasso"     title="L" data-i18n="tool-lasso">🔵 Laço</button>
+        <button class="tool-btn tool-btn-highlight" data-tool="stroke" title="K" data-i18n="tool-stroke">📏 Linha OCR</button>
+        <button class="tool-btn" data-tool="text-box"  title="T" data-i18n="tool-textbox">📝 TextBox</button>
       </div>
       <div id="tool-options" class="tool-options"></div>
       <div class="btn-row" style="margin-top:5px">
@@ -148,93 +142,98 @@
 
     <!-- CAMADAS -->
     <section class="tool-section">
-      <h3 class="tool-title">🗂 Camadas</h3>
+      <h3 class="tool-title" data-i18n="sec-layers">🗂 Camadas</h3>
       <div id="layers-panel" class="layers-list">
         <div class="layer-item" data-layer="base">
           <span class="layer-eye" data-layer="base">👁</span>
-          <span class="layer-name">🖼 Imagem Base</span>
+          <span class="layer-name" data-i18n="layer-base">🖼 Imagem Base</span>
         </div>
         <div class="layer-item" data-layer="inpaint">
           <span class="layer-eye" data-layer="inpaint">👁</span>
-          <span class="layer-name">🪄 Inpaint</span>
+          <span class="layer-name" data-i18n="layer-inpaint">🪄 Inpaint</span>
         </div>
         <div class="layer-item" data-layer="text">
           <span class="layer-eye" data-layer="text">👁</span>
-          <span class="layer-name">📝 Texto</span>
+          <span class="layer-name" data-i18n="layer-text">📝 Texto</span>
         </div>
         <div class="layer-item" data-layer="overlay">
           <span class="layer-eye" data-layer="overlay">👁</span>
-          <span class="layer-name">🔲 Boxes OCR</span>
+          <span class="layer-name" data-i18n="layer-overlay">🔲 Boxes OCR</span>
         </div>
       </div>
     </section>
 
     <!-- ZOOM -->
     <section class="tool-section">
-      <h3 class="tool-title">🔭 Visualização</h3>
+      <h3 class="tool-title" data-i18n="sec-zoom">🔭 Visualização</h3>
       <div class="tool-group">
         <label class="tool-label">Zoom: <span id="zoom-val">100</span>%</label>
         <input type="range" id="zoom-range" min="10" max="400" value="100" class="tool-range" />
       </div>
       <div class="btn-row">
-        <button id="btn-fit"        class="btn btn-sm">⊡ Ajustar</button>
-        <button id="btn-zoom-reset" class="btn btn-sm">1:1</button>
+        <button id="btn-fit"        class="btn btn-sm" data-i18n="btn-fit">⊡ Ajustar</button>
+        <button id="btn-zoom-reset" class="btn btn-sm" data-i18n="btn-zoom-reset">1:1</button>
       </div>
-      <p class="tip-text">🖱 Scroll=zoom · Arrastar=mover · Alt+drag=pan</p>
+      <p class="tip-text" data-i18n="tip-zoom">🖱 Scroll=zoom · Arrastar=mover · Alt+drag=pan</p>
     </section>
 
     <!-- TEXTO MANUAL -->
     <section class="tool-section">
-      <h3 class="tool-title">✏ Texto Manual</h3>
-      <input type="text" id="new-text-input" class="tool-input" placeholder="Digite o texto..." />
-      <button id="btn-add-text" class="btn btn-accent w-full" disabled>+ Adicionar Caixa</button>
+      <h3 class="tool-title" data-i18n="sec-manual-text">✏ Texto Manual</h3>
+      <input type="text" id="new-text-input" class="tool-input" data-i18n-placeholder="ph-new-text" placeholder="Digite o texto..." />
+      <button id="btn-add-text" class="btn btn-accent w-full" disabled data-i18n="btn-add-text">+ Adicionar Caixa</button>
     </section>
 
-    <!-- EDITAR CAIXA SELECIONADA -->
+    <!-- EDITAR CAIXA -->
     <section class="tool-section" id="box-editor" style="display:none">
-      <h3 class="tool-title">📦 Editar Caixa <span id="box-id-label" class="box-id-label"></span></h3>
+      <h3 class="tool-title">
+        <span data-i18n="sec-box-edit">📦 Editar Caixa</span>
+        <span id="box-id-label" class="box-id-label"></span>
+      </h3>
       <div class="tool-group">
-        <label class="tool-label">Texto original (OCR)</label>
-        <textarea id="box-ocr-text" class="tool-input ocr-textarea" rows="2" placeholder="Texto OCR…" readonly></textarea>
+        <label class="tool-label" data-i18n="lbl-ocr-text">Texto original (editável)</label>
+        <textarea id="box-ocr-text" class="tool-input ocr-textarea" rows="2"
+          data-i18n-placeholder="ph-ocr-text" placeholder="Digite ou faça OCR…" readonly></textarea>
         <div class="btn-row" style="margin-top:3px">
-          <button id="btn-copy-ocr" class="btn btn-sm flex-1" title="Copiar OCR para tradução">⬇ Usar OCR</button>
-          <button id="btn-ocr-box"  class="btn btn-sm flex-1" title="Re-OCR nesta caixa">🔍 Re-OCR</button>
+          <button id="btn-copy-ocr" class="btn btn-sm flex-1" data-i18n="btn-copy-ocr">⬇ Usar OCR</button>
+          <button id="btn-ocr-box"  class="btn btn-sm flex-1" data-i18n="btn-ocr-box">🔍 Re-OCR</button>
         </div>
       </div>
       <div class="tool-group">
-        <label class="tool-label">Texto traduzido / final</label>
-        <textarea id="box-text" class="tool-input" rows="3" placeholder="Texto traduzido..."></textarea>
+        <label class="tool-label" data-i18n="lbl-final-text">Texto traduzido / final</label>
+        <textarea id="box-text" class="tool-input" rows="3"
+          data-i18n-placeholder="ph-final-text" placeholder="Texto traduzido..."></textarea>
       </div>
       <div class="tool-row">
         <div class="tool-group flex-1">
-          <label class="tool-label">Fonte</label>
+          <label class="tool-label" data-i18n="lbl-font">Fonte</label>
           <select id="box-font-family" class="tool-select"></select>
         </div>
         <div class="tool-group" style="width:54px">
-          <label class="tool-label">Tam.</label>
+          <label class="tool-label" data-i18n="lbl-size">Tam.</label>
           <input type="number" id="box-font-size" class="tool-input" value="18" min="6" max="120" />
         </div>
         <div class="tool-group" style="width:40px">
-          <label class="tool-label">Auto</label>
-          <input type="checkbox" id="box-font-auto" checked title="Tamanho automático" class="tool-checkbox" />
+          <label class="tool-label" data-i18n="lbl-auto">Auto</label>
+          <input type="checkbox" id="box-font-auto" checked class="tool-checkbox" />
         </div>
       </div>
       <div class="tool-row">
         <div class="tool-group">
-          <label class="tool-label">Cor</label>
+          <label class="tool-label" data-i18n="lbl-color">Cor</label>
           <input type="color" id="box-color" value="#000000" class="tool-color" />
         </div>
         <div class="tool-group">
-          <label class="tool-label">Fundo</label>
+          <label class="tool-label" data-i18n="lbl-bg">Fundo</label>
           <input type="color" id="box-bg" value="#ffffff" class="tool-color" />
         </div>
         <div class="tool-group flex-1">
-          <label class="tool-label">Opac. <span id="box-opacity-val">90</span>%</label>
+          <label class="tool-label"><span data-i18n="lbl-opacity">Opac.</span> <span id="box-opacity-val">90</span>%</label>
           <input type="range" id="box-opacity" min="0" max="100" value="90" class="tool-range" />
         </div>
       </div>
       <div class="tool-group">
-        <label class="tool-label">Alinhamento</label>
+        <label class="tool-label" data-i18n="lbl-align">Alinhamento</label>
         <div class="btn-row">
           <button class="btn btn-sm align-btn" data-align="left">⬅</button>
           <button class="btn btn-sm align-btn active" data-align="center">↔</button>
@@ -242,15 +241,13 @@
         </div>
       </div>
       <div class="tool-group">
-        <label class="tool-label">Rotação: <span id="box-rotation-val">0</span>°</label>
+        <label class="tool-label"><span data-i18n="lbl-rotation">Rotação</span>: <span id="box-rotation-val">0</span>°</label>
         <input type="range" id="box-rotation" min="-180" max="180" value="0" class="tool-range" />
       </div>
-      <!-- Auto layout -->
-      <div class="tool-group auto-layout-group">
-        <label class="tool-label">Auto layout</label>
+      <div class="tool-group">
         <div class="btn-row">
-          <button id="btn-auto-layout" class="btn btn-sm flex-1" title="Recalcular tamanho/posição automático">⚙ Layout</button>
-          <button id="btn-inpaint-box" class="btn btn-sm flex-1" title="Inpaint nesta área">🪄 Inpaint</button>
+          <button id="btn-auto-layout" class="btn btn-sm flex-1" data-i18n="btn-layout">⚙ Layout</button>
+          <button id="btn-inpaint-box" class="btn btn-sm flex-1" data-i18n="btn-inpaint-box">🪄 Inpaint</button>
           <button id="btn-delete-box"  class="btn btn-danger" style="padding:4px 8px">🗑</button>
         </div>
       </div>
@@ -264,11 +261,14 @@
     <div class="drop-zone" id="drop-zone">
       <div class="drop-content">
         <div class="drop-icon">🗒️</div>
-        <p class="drop-title">Arraste uma página de mangá</p>
-        <p class="drop-sub">ou clique para selecionar</p>
-        <button class="btn btn-primary btn-lg" id="btn-select-file">Selecionar Imagem</button>
-        <p class="drop-hint">JPG · PNG · WebP</p>
-        <p class="drop-hint" style="font-size:.72rem;margin-top:4px">ou <a href="#" id="link-load-project" style="color:var(--c-accent2)">carregar projeto .met</a></p>
+        <p class="drop-title" data-i18n="drop-title">Arraste uma página de mangá</p>
+        <p class="drop-sub"   data-i18n="drop-sub">ou clique para selecionar</p>
+        <button class="btn btn-primary btn-lg" id="btn-select-file" data-i18n="btn-select-file">Selecionar Imagem</button>
+        <p class="drop-hint"  data-i18n="drop-hint1">JPG · PNG · WebP</p>
+        <p class="drop-hint" style="font-size:.72rem;margin-top:4px">
+          <span data-i18n="drop-hint2">ou</span>
+          <a href="#" id="link-load-project" style="color:var(--c-accent2)" data-i18n="drop-link">carregar projeto .met</a>
+        </p>
       </div>
       <input type="file" id="file-input" accept="image/*" style="display:none" />
     </div>
@@ -293,11 +293,11 @@
       </div>
     </div>
 
-    <!-- Rotated selection toolbar (shown over canvas when selection active) -->
+    <!-- Selection toolbar (rect + angle) -->
     <div id="sel-toolbar" class="sel-toolbar hidden">
       <label class="sel-label">↻ <span id="sel-angle-val">0</span>°</label>
       <input type="range" id="sel-angle" min="-45" max="45" value="0" class="sel-angle-range" />
-      <button id="btn-ocr-sel"    class="btn btn-sm">🔍 OCR</button>
+      <button id="btn-ocr-sel"    class="btn btn-sm" data-i18n="btn-ocr-sel">🔍 OCR</button>
       <button id="btn-clear-sel2" class="btn btn-sm">✕</button>
     </div>
 
@@ -306,14 +306,14 @@
   <!-- ═══ RIGHT PANEL — BLOCKS ═══ -->
   <aside class="panel panel-right" id="panel-right">
     <div class="panel-header">
-      <h3 class="tool-title">📋 Blocos</h3>
+      <h3 class="tool-title" data-i18n="sec-blocks">📋 Blocos</h3>
       <div style="display:flex;gap:4px;align-items:center">
         <span class="badge" id="block-count">0</span>
-        <button id="btn-add-manual-block" class="btn btn-sm" title="Adicionar bloco manual vazio" style="padding:2px 6px">+</button>
+        <button id="btn-add-manual-block" class="btn btn-sm" title="+" style="padding:2px 6px" data-i18n="btn-add-manual">+</button>
       </div>
     </div>
     <div id="blocks-list" class="blocks-list">
-      <p class="empty-hint">Rode o OCR ou adicione blocos (+) manualmente.</p>
+      <p class="empty-hint" data-i18n="hint-blocks">Adicione blocos (+) ou rode o OCR.</p>
     </div>
   </aside>
 
