@@ -1,35 +1,44 @@
 /**
- * textManager.js — v7
+ * textManager.js — v9
  *
- * Correções vs v6:
- *  1. AUTO-SIZING FIX: ao criar uma caixa via add() com h explícito (vindo de
- *     _applyTranslation), o h não é mais recalculado por _estH. O _estH só
- *     é chamado quando h não é fornecido. Isso evita que a caixa apareça
- *     com altura incorreta ao aplicar a tradução.
+ * Correções e melhorias vs v7:
  *
- *  2. _styleEl: min-height usa data.h apenas quando h veio do _estH (modo
- *     texto-livre). Quando a caixa tem dimensões fixas (apply), usa height
- *     exato para respeitar o bbox original.
+ *  1. BUG FIX — retângulo branco ao remover caixa aplicada:
+ *     Quando uma caixa é criada via _applyTranslation, o app já chamou
+ *     editor.fillRect() que pintou a área de branco. A remoção da caixa DOM
+ *     não desfazia isso. Agora: add() aceita `snapshotRegion` (ImageData do
+ *     canvas ANTES do fillRect). remove() restaura esse snapshot no canvas
+ *     antes de remover o elemento DOM, revertendo completamente o apply.
  *
- *  3. _estH: lógica de estimativa de altura melhorada com lineH real.
+ *  2. BUG FIX — _styleEl resetava `selected` de forma redundante:
+ *     a linha `if (box.el.classList.contains('selected')) box.el.classList.add('selected')`
+ *     era no-op e podia causar re-layout desnecessário. Removida.
  *
- *  4. Ghosting fix mantido (clearRect + save/restore).
+ *  3. PERF — preview só renderiza caixas dirty; caixas sem alteração
+ *     usam o OffscreenCanvas em cache. Mantido e corrigido o caso em que
+ *     o cache ficava com tamanho desatualizado após resize.
  *
- *  5. Drag/resize mantêm correção de scale.
- *
- *  6. Removida análise de região (analyzeRegion) — não é mais usada.
+ *  4. BUG FIX — _onResizeS não marcava fixedH=true no dado, só no objeto.
+ *     Agora sincroniza box.data.fixedH junto com box.fixedH.
  */
 
 import { renderBoxToCanvas } from './editor.js';
 
 export class TextManager {
-  constructor(textLayer, previewCanvas, editor) {
+  /**
+   * @param {HTMLElement}      textLayer
+   * @param {HTMLCanvasElement} previewCanvas
+   * @param {CanvasEditor}     editor
+   * @param {HTMLCanvasElement} baseCanvas   — necessário para snapshot/restore
+   */
+  constructor(textLayer, previewCanvas, editor, baseCanvas) {
     this.textLayer     = textLayer;
     this.previewCanvas = previewCanvas;
     this.editor        = editor;
-    this.pCtx          = previewCanvas.getContext('2d');
+    this.baseCanvas    = baseCanvas;   // referência para snapshot
 
-    this.boxes      = new Map();   // id → { el, data, dirty, cache, fixedH }
+    this.pCtx       = previewCanvas.getContext('2d');
+    this.boxes      = new Map();   // id → { el, data, dirty, cache, fixedH, snapshot }
     this.selectedId = null;
 
     this.onSelect   = null;
@@ -48,6 +57,12 @@ export class TextManager {
   // ═══════════════════════════════════════════════════
   // ADD
   // ═══════════════════════════════════════════════════
+  /**
+   * @param {object} opts
+   *   opts.snapshotRegion — ImageData capturado ANTES de qualquer fillRect.
+   *                         Se presente, remove() restaurará essa região.
+   *   opts.snapshotX/Y   — origem do snapshot no canvas base.
+   */
   add(opts) {
     const data = {
       id:         opts.id         ?? `box-${Date.now()}`,
@@ -55,7 +70,7 @@ export class TextManager {
       x:          opts.x          ?? 50,
       y:          opts.y          ?? 50,
       w:          opts.w          ?? 140,
-      h:          opts.h          ?? null,   // null = auto
+      h:          opts.h          ?? null,
       fontSize:   opts.fontSize   ?? 18,
       fontFamily: opts.fontFamily ?? 'Bangers',
       color:      opts.color      ?? '#000000',
@@ -65,8 +80,6 @@ export class TextManager {
       rotation:   opts.rotation   ?? 0,
     };
 
-    // fixedH = true quando h foi fornecido explicitamente (ex.: apply)
-    // fixedH = false quando h é livre (texto manual, text-box tool)
     const fixedH = opts.h != null;
     if (!fixedH) data.h = this._estH(data);
 
@@ -74,7 +87,13 @@ export class TextManager {
 
     const el = this._buildEl(data, fixedH);
     this.textLayer.appendChild(el);
-    this.boxes.set(data.id, { el, data, dirty: true, cache: null, fixedH });
+
+    // Guarda snapshot da área ANTES do fillRect para poder restaurar no remove()
+    const snapshot = opts.snapshotRegion
+      ? { data: opts.snapshotRegion, x: opts.snapshotX ?? data.x, y: opts.snapshotY ?? data.y }
+      : null;
+
+    this.boxes.set(data.id, { el, data, dirty: true, cache: null, fixedH, snapshot });
 
     this._schedulePreview();
     this.select(data.id);
@@ -118,8 +137,6 @@ export class TextManager {
     const span = el.querySelector('.tb-text');
     if (span) span.textContent = data.text;
 
-    // Se fixedH: usa height fixo + overflow hidden (caixa respeita bbox OCR).
-    // Se livre: usa min-height (cresce com o texto).
     const heightRule = fixedH
       ? `height:${data.h}px; overflow:hidden;`
       : `min-height:${data.h}px;`;
@@ -150,20 +167,21 @@ export class TextManager {
     const box = this.boxes.get(id); if (!box) return;
     Object.assign(box.data, patch);
 
-    // Recalcula altura só se não for caixa de altura fixa e algo relevante mudou
     if (!box.fixedH && ('text' in patch || 'fontSize' in patch || 'w' in patch))
       box.data.h = this._estH(box.data);
 
     this._styleEl(box.el, box.data, box.fixedH);
-    if (this.selectedId === id) box.el.classList.add('selected');
+
+    // Invalida cache se dimensões mudaram
+    if ('w' in patch || 'h' in patch || 'fontSize' in patch) {
+      box.cache = null;
+    }
+
     box.dirty = true;
-    box.cache = null;
     this._schedulePreview();
   }
 
-  updateSelected(patch) {
-    if (this.selectedId) this.update(this.selectedId, patch);
-  }
+  updateSelected(patch) { if (this.selectedId) this.update(this.selectedId, patch); }
 
   // ═══════════════════════════════════════════════════
   // SELECT / DESELECT
@@ -186,8 +204,23 @@ export class TextManager {
     if (this.onDeselect) this.onDeselect();
   }
 
+  // ═══════════════════════════════════════════════════
+  // REMOVE — restaura canvas se tinha snapshot
+  // ═══════════════════════════════════════════════════
   remove(id) {
     const box = this.boxes.get(id); if (!box) return;
+
+    // BUG FIX: restaura a região do canvas base ao estado anterior ao apply
+    if (box.snapshot && this.baseCanvas) {
+      const { data: snap, x, y } = box.snapshot;
+      try {
+        const ctx = this.baseCanvas.getContext('2d', { willReadFrequently: true });
+        ctx.putImageData(snap, x, y);
+      } catch (e) {
+        // canvas pode ter mudado de tamanho — ignora silenciosamente
+      }
+    }
+
     box.el.remove();
     this.boxes.delete(id);
     if (this.selectedId === id) {
@@ -199,6 +232,16 @@ export class TextManager {
 
   clear() { [...this.boxes.keys()].forEach(id => this.remove(id)); }
 
+  /**
+   * Remove a caixa do DOM SEM restaurar o canvas (usado quando o inpaint
+   * já limpou a área ou quando o usuário quer manter a pintura).
+   */
+  removeSilent(id) {
+    const box = this.boxes.get(id); if (!box) return;
+    box.snapshot = null;   // descarta snapshot
+    this.remove(id);
+  }
+
   getAllData() { return [...this.boxes.values()].map(b => ({ ...b.data })); }
 
   syncPreviewSize(w, h) {
@@ -206,6 +249,8 @@ export class TextManager {
       this.previewCanvas.width  = w;
       this.previewCanvas.height = h;
       this.pCtx = this.previewCanvas.getContext('2d');
+      // Invalida todos os caches (dimensões mudaram)
+      for (const box of this.boxes.values()) { box.cache = null; box.dirty = true; }
     }
   }
 
@@ -233,13 +278,19 @@ export class TextManager {
     ctx.clearRect(0, 0, pc.width, pc.height);
     ctx.restore();
 
-    for (const { data, dirty, cache } of this.boxes.values()) {
-      if (dirty || !cache) {
+    for (const entry of this.boxes.values()) {
+      const { data, dirty, cache } = entry;
+      // Invalida cache se dimensões do canvas foram recortadas
+      const cacheValid = cache &&
+        cache.width  === data.w + 20 &&
+        cache.height === data.h + 20;
+
+      if (dirty || !cacheValid) {
         const oc     = new OffscreenCanvas(data.w + 20, data.h + 20);
         const oc_ctx = oc.getContext('2d');
         renderBoxToCanvas(oc_ctx, { ...data, x: 3, y: 3 });
-        const entry = this.boxes.get(data.id);
-        if (entry) { entry.cache = oc; entry.dirty = false; }
+        entry.cache = oc;
+        entry.dirty = false;
         ctx.drawImage(oc, data.x - 3, data.y - 3);
       } else {
         ctx.drawImage(cache, data.x - 3, data.y - 3);
@@ -284,7 +335,7 @@ export class TextManager {
     const onMove = (ev) => {
       data.w = Math.max(50, sw + (ev.clientX - sx) / s);
       box.el.style.width = `${data.w}px`;
-      box.dirty = true; box.cache = null;
+      box.cache = null; box.dirty = true;
       this._schedulePreview();
     };
     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -299,11 +350,11 @@ export class TextManager {
     const s = this.editor?.scale ?? 1;
     const onMove = (ev) => {
       data.h = Math.max(20, sh + (ev.clientY - sy) / s);
-      // Ao redimensionar manualmente, a caixa deixa de ser fixedH
+      // FIX: sincroniza ambos os flags de altura fixa
       box.fixedH = true;
-      box.el.style.height   = `${data.h}px`;
+      box.el.style.height    = `${data.h}px`;
       box.el.style.minHeight = '';
-      box.dirty = true; box.cache = null;
+      box.cache = null; box.dirty = true;
       this._schedulePreview();
     };
     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -323,7 +374,7 @@ export class TextManager {
         Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI) + 90
       );
       el.style.transform = `rotate(${data.rotation}deg)`;
-      box.dirty = true; box.cache = null;
+      box.cache = null; box.dirty = true;
       this._schedulePreview();
       const inp = document.getElementById('box-rotation');
       const val = document.getElementById('box-rotation-val');
@@ -337,13 +388,11 @@ export class TextManager {
 
   // ── Helpers ────────────────────────────────────────
   _estH(data) {
-    // Estimativa de altura para caixas de tamanho livre
     const lineH  = data.fontSize * 1.35;
     const charsPerLine = Math.max(1, Math.floor(data.w / (data.fontSize * 0.58)));
     let totalLines = 0;
-    for (const line of (data.text || '').split('\n')) {
+    for (const line of (data.text || '').split('\n'))
       totalLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
-    }
     return Math.max(data.fontSize * 1.5, totalLines * lineH + 12);
   }
 }

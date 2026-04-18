@@ -82,7 +82,7 @@ export function renderBlocks(blocks, cbs) {
         <span class="block-conf" style="color:${confColor}">${b.confidence}%</span>
         <div class="block-actions">
           <button class="block-action-btn vis-btn"     title="Visibilidade">${b.visible ? '👁' : '🙈'}</button>
-          <button class="block-action-btn erase-btn"   title="Apagar original">🖌</button>
+          <button class="block-action-btn clean-btn"   title="Limpar texto (inteligente)">🧹</button>
           <button class="block-action-btn inpaint-btn" title="Inpaint automático">🪄</button>
           <button class="block-action-btn reocr-btn"   title="Re-OCR">🔄</button>
           <button class="block-action-btn danger del-btn" title="Remover">🗑</button>
@@ -99,7 +99,7 @@ export function renderBlocks(blocks, cbs) {
     `;
 
     card.querySelector('.vis-btn').onclick     = (e) => { e.stopPropagation(); cbs.onToggleVis(b.id); };
-    card.querySelector('.erase-btn').onclick   = (e) => { e.stopPropagation(); cbs.onErase(b.id); };
+    card.querySelector('.clean-btn').onclick   = (e) => { e.stopPropagation(); cbs.onClean(b.id); };
     card.querySelector('.inpaint-btn').onclick = (e) => { e.stopPropagation(); cbs.onInpaint(b.id); };
     card.querySelector('.reocr-btn').onclick   = (e) => { e.stopPropagation(); cbs.onReOCR(b.id); };
     card.querySelector('.del-btn').onclick     = (e) => { e.stopPropagation(); cbs.onDelete(b.id); };
