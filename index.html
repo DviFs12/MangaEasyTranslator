@@ -1,236 +1,240 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>MangaEasyTranslator v10</title>
-
-  <!-- Tesseract OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
-
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css"/>
 </head>
 <body>
-
 <div id="app">
 
-  <!-- ═══════════════════════════════════════════════════════
-       HEADER
-  ═══════════════════════════════════════════════════════ -->
-  <header id="header">
-    <div class="logo">
-      <span class="logo-icon">📖</span>
-      <span>Manga<span class="accent">Easy</span>Translator</span>
-      <span class="ver">v10</span>
-    </div>
-
-    <div class="header-sep"></div>
-
-    <button id="btn-new"  class="btn" data-i18n="btnNew">↺ Nova</button>
-    <button id="btn-save" class="btn" data-i18n="btnSave">💾 Salvar</button>
-    <button id="btn-load" class="btn" data-i18n="btnLoad">📂 Carregar</button>
-    <input  id="project-file-input" type="file" accept=".met10,.json" style="display:none" />
-
-    <div class="header-sep"></div>
-
-    <button id="btn-ocr-all"   class="btn" data-i18n="btnOcrAll"   disabled>🔍 OCR</button>
-    <button id="btn-trans-all" class="btn" data-i18n="btnTransAll" disabled>🌐 Traduzir</button>
-
-    <div class="header-sep"></div>
-
-    <button id="btn-undo" class="btn btn-icon" title="Ctrl+Z" disabled>↩</button>
-    <button id="btn-redo" class="btn btn-icon" title="Ctrl+Y" disabled>↪</button>
-
-    <div class="header-spacer"></div>
-
-    <button id="btn-lang"   class="btn">🌐 EN</button>
-    <button id="btn-export" class="btn btn-primary" data-i18n="btnExport" disabled>⬇ Exportar PNG</button>
-  </header>
-
-  <!-- ═══════════════════════════════════════════════════════
-       LEFT TOOLBAR
-  ═══════════════════════════════════════════════════════ -->
-  <aside id="toolbar">
-
-    <!-- Selection tools -->
-    <button class="tool-btn active" data-tool="select" title="Selecionar (S)">⬚</button>
-    <button class="tool-btn" data-tool="lasso"  title="Laço (L)">🔴</button>
-    <button class="tool-btn" data-tool="stroke" title="Linha OCR (K)">📏</button>
-
-    <div class="tool-sep"></div>
-
-    <!-- Paint tools -->
-    <button class="tool-btn" data-tool="brush"  title="Pincel (B)">🖌</button>
-    <button class="tool-btn" data-tool="eraser" title="Borracha (E)">⬜</button>
-    <button class="tool-btn" data-tool="clone"  title="Clone (C)">🔁</button>
-
-    <div class="tool-sep"></div>
-
-    <!-- Navigation -->
-    <button class="tool-btn" data-tool="pan" title="Mover (Space)">✋</button>
-    <button id="btn-fit" class="tool-btn" title="Ajustar (0)">⊡</button>
-
-  </aside>
-
-  <!-- ═══════════════════════════════════════════════════════
-       CANVAS STAGE
-  ═══════════════════════════════════════════════════════ -->
-  <main id="canvas-stage">
-
-    <!-- Drop zone (shown when no image loaded) -->
-    <div id="drop-zone">
-      <div class="drop-zone-icon">🖼</div>
-      <div class="drop-zone-label" data-i18n="statusDrop">Arraste uma imagem ou clique para abrir</div>
-      <div class="drop-zone-hint">PNG, JPG, WEBP</div>
-      <input id="file-input" type="file" accept="image/*" style="display:none" />
-    </div>
-
-    <!-- Canvas world (transformed) -->
-    <div id="canvas-world">
-      <canvas id="base-canvas"></canvas>
-      <canvas id="inpaint-canvas" style="display:none"></canvas>
-      <canvas id="selection-canvas"></canvas>
-      <canvas id="preview-canvas"></canvas>
-      <div id="text-layer"></div>
-      <canvas id="overlay-canvas"></canvas>
-    </div>
-
-    <!-- Zoom bar -->
-    <div id="zoom-bar">
-      <button id="btn-zoom-out" class="btn-icon" style="font-size:14px">−</button>
-      <input id="zoom-range" type="range" min="5" max="800" value="100" />
-      <span id="zoom-val">100%</span>
-      <button id="btn-zoom-in" class="btn-icon" style="font-size:14px">+</button>
-    </div>
-
-  </main>
-
-  <!-- Selection floating toolbar — rendered outside canvas-stage for z-index -->
-  <div id="sel-toolbar" class="hidden">
-    <button id="btn-sel-ocr"     class="sel-action-btn ocr">     🔍 <span data-i18n="actionOcr">OCR</span></button>
-    <button id="btn-sel-clean"   class="sel-action-btn clean">   🧹 <span data-i18n="actionClean">Limpar</span></button>
-    <button id="btn-sel-inpaint" class="sel-action-btn inpaint"> 🎨 <span data-i18n="actionInpaint">Inpaint</span></button>
-    <button id="btn-sel-text"    class="sel-action-btn text">    📝 <span data-i18n="actionText">Texto</span></button>
-    <button id="btn-sel-clear"   class="sel-action-btn clear">   ✕</button>
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header id="header">
+  <div class="logo">
+    <span class="logo-icon">📖</span>
+    <span>Manga<span class="accent">Easy</span>Translator</span>
+    <span class="ver">v10</span>
   </div>
 
-  <!-- ═══════════════════════════════════════════════════════
-       RIGHT PANEL
-  ═══════════════════════════════════════════════════════ -->
-  <aside id="panel-right">
+  <div class="h-sep"></div>
 
-    <!-- Tabs -->
-    <div class="panel-tabs">
-      <button class="panel-tab active" data-tab="settings">⚙ Config</button>
-      <button class="panel-tab"        data-tab="blocks">📝 Caixas</button>
+  <button id="btn-new"  class="btn" title="Nova sessão">↺ Nova</button>
+  <button id="btn-save" class="btn" title="Salvar projeto (Ctrl+S)">💾</button>
+  <button id="btn-load" class="btn" title="Carregar projeto">📂</button>
+  <input  id="project-file-input" type="file" accept=".met10,.json" style="display:none"/>
+
+  <div class="h-sep"></div>
+
+  <button id="btn-ocr-all"   class="btn" disabled title="OCR em toda a página">🔍 OCR</button>
+  <button id="btn-trans-all" class="btn" disabled title="Traduzir todos os blocos">🌐 Traduzir</button>
+
+  <div class="h-sep"></div>
+
+  <button id="btn-undo" class="btn btn-icon" title="Desfazer (Ctrl+Z)" disabled>↩</button>
+  <button id="btn-redo" class="btn btn-icon" title="Refazer (Ctrl+Y)"  disabled>↪</button>
+
+  <div class="h-spacer"></div>
+
+  <button id="btn-lang"   class="btn btn-ghost">🌐 EN</button>
+  <button id="btn-export" class="btn btn-primary" disabled title="Exportar PNG">⬇ Exportar PNG</button>
+</header>
+
+<!-- ══════════════════ BODY ══════════════════ -->
+<div id="body-row">
+
+<!-- ══ TOOLBAR ESQUERDA (estilo Photoshop) ══ -->
+<aside id="toolbar">
+
+  <div class="tool-group-label">Seleção</div>
+  <button class="tool-btn active" data-tool="select" title="Selecionar [S]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l5 12 2.5-5L17 9z"/></svg>
+  </button>
+  <button class="tool-btn" data-tool="lasso" title="Laço [L]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4c-3.3 0-6 2.2-6 5s2.7 5 6 5 6-2.2 6-5" stroke-dasharray="2 2"/><circle cx="10" cy="14" r="1.5" fill="currentColor"/></svg>
+  </button>
+  <button class="tool-btn" data-tool="stroke" title="Linha OCR [K]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="3" y1="10" x2="17" y2="10"/><path d="M14 7l3 3-3 3"/></svg>
+  </button>
+
+  <div class="tool-sep"></div>
+  <div class="tool-group-label">Pintura</div>
+
+  <button class="tool-btn" data-tool="brush" title="Pincel [B]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 16c0-2 2-3 4-4l6-6a2 2 0 012.8 2.8l-6 6c-1 2-2 4-4 4z"/><circle cx="14.5" cy="5.5" r="1" fill="currentColor"/></svg>
+  </button>
+  <button class="tool-btn" data-tool="eraser" title="Borracha [E]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="9" width="14" height="7" rx="1"/><path d="M7 9V6a3 3 0 016 0v3"/></svg>
+  </button>
+  <button class="tool-btn" data-tool="clone" title="Carimbo Clone [C]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4"/><path d="M13 13l4 4M11 9l4 4"/></svg>
+  </button>
+
+  <div class="tool-sep"></div>
+  <div class="tool-group-label">Vista</div>
+
+  <button class="tool-btn" data-tool="pan" title="Mover [Space/Alt]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3v3M10 14v3M3 10h3M14 10h3"/><circle cx="10" cy="10" r="3"/></svg>
+  </button>
+  <button id="btn-fit" class="tool-btn" title="Ajustar à tela [0]">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="12" height="12" rx="1"/><path d="M7 7l6 6M13 7l-6 6" stroke-width="1"/></svg>
+  </button>
+
+  <div class="tool-sep"></div>
+
+  <!-- Tamanho do pincel -->
+  <div class="tool-option-group">
+    <div class="tool-group-label">Tam.</div>
+    <input id="tool-size" type="range" min="2" max="120" value="20" class="tool-vslider" title="Tamanho"/>
+    <span id="tool-size-val" class="tool-val">20</span>
+  </div>
+
+  <!-- Cor -->
+  <div class="tool-option-group" style="margin-top:6px">
+    <div class="tool-group-label">Cor</div>
+    <input id="tool-color" type="color" value="#ffffff" class="tool-color-pick" title="Cor"/>
+  </div>
+
+</aside>
+
+<!-- ══ CANVAS STAGE ══ -->
+<main id="canvas-stage">
+
+  <div id="drop-zone">
+    <div class="dz-icon">🖼</div>
+    <div class="dz-label" data-i18n="statusDrop">Arraste uma imagem ou clique para abrir</div>
+    <div class="dz-hint">PNG · JPG · WEBP</div>
+    <input id="file-input" type="file" accept="image/*" style="display:none"/>
+  </div>
+
+  <div id="canvas-world">
+    <canvas id="base-canvas"></canvas>
+    <canvas id="inpaint-canvas" style="pointer-events:none;opacity:.5;display:none"></canvas>
+    <canvas id="selection-canvas" style="pointer-events:none"></canvas>
+    <canvas id="preview-canvas"   style="pointer-events:none"></canvas>
+    <div    id="text-layer"></div>
+    <canvas id="overlay-canvas"></canvas>
+  </div>
+
+  <!-- Zoom bar flutuante -->
+  <div id="zoom-bar">
+    <button id="btn-zoom-out" class="zb-btn">−</button>
+    <input  id="zoom-range" type="range" min="5" max="800" value="100"/>
+    <span   id="zoom-val">100%</span>
+    <button id="btn-zoom-in"  class="zb-btn">+</button>
+    <button id="btn-zoom-fit" class="zb-btn" title="Ajustar">⊡</button>
+  </div>
+
+</main>
+
+<!-- Toolbar flutuante de seleção -->
+<div id="sel-toolbar" class="hidden">
+  <button id="btn-sel-ocr"     class="sel-btn ocr">🔍 OCR</button>
+  <button id="btn-sel-clean"   class="sel-btn clean">🧹 Limpar</button>
+  <button id="btn-sel-inpaint" class="sel-btn inpaint">🎨 Inpaint</button>
+  <button id="btn-sel-text"    class="sel-btn text">📝 Texto</button>
+  <button id="btn-sel-clear"   class="sel-btn clear">✕</button>
+</div>
+
+<!-- ══ PAINEL DIREITO ══ -->
+<aside id="panel-right">
+
+  <div class="panel-tabs">
+    <button class="panel-tab active" data-tab="settings">⚙ Config</button>
+    <button class="panel-tab"        data-tab="blocks">📝 Caixas</button>
+  </div>
+
+  <!-- Tab: Configurações -->
+  <div class="panel-content active" id="tab-settings">
+
+    <div class="sec">
+      <div class="sec-title">🔍 OCR</div>
+      <div class="field">
+        <label>Idioma de origem</label>
+        <select id="ocr-lang">
+          <optgroup label="Asiático">
+            <option value="jpn">Japonês</option>
+            <option value="chi_sim">Chinês Simpl.</option>
+            <option value="chi_tra">Chinês Trad.</option>
+            <option value="kor">Coreano</option>
+          </optgroup>
+          <optgroup label="Latino">
+            <option value="eng">Inglês</option>
+            <option value="por">Português</option>
+            <option value="spa">Espanhol</option>
+            <option value="fra">Francês</option>
+            <option value="deu">Alemão</option>
+            <option value="ita">Italiano</option>
+            <option value="rus">Russo</option>
+          </optgroup>
+          <optgroup label="Outros">
+            <option value="ind">Indonésio</option>
+            <option value="vie">Vietnamita</option>
+            <option value="ara">Árabe</option>
+          </optgroup>
+        </select>
+      </div>
+      <div class="field">
+        <label>Modo de segmentação</label>
+        <select id="ocr-psm">
+          <option value="11">Auto (PSM 11)</option>
+          <option value="6">Bloco (PSM 6)</option>
+          <option value="7">Linha (PSM 7)</option>
+          <option value="8">Palavra (PSM 8)</option>
+        </select>
+      </div>
     </div>
 
-    <!-- Settings tab -->
-    <div class="panel-content active" id="tab-settings">
-
-      <div class="section">
-        <div class="section-title" data-i18n="secOcr">OCR</div>
-        <div class="field">
-          <label data-i18n="lblSrcLang">Idioma de origem</label>
-          <select id="ocr-lang">
-            <optgroup label="Asiático">
-              <option value="jpn">Japonês</option>
-              <option value="chi_sim">Chinês Simpl.</option>
-              <option value="chi_tra">Chinês Trad.</option>
-              <option value="kor">Coreano</option>
-            </optgroup>
-            <optgroup label="Latino">
-              <option value="eng">Inglês</option>
-              <option value="por">Português</option>
-              <option value="spa">Espanhol</option>
-              <option value="fra">Francês</option>
-              <option value="deu">Alemão</option>
-              <option value="ita">Italiano</option>
-              <option value="rus">Russo</option>
-            </optgroup>
-            <optgroup label="Outros">
-              <option value="ind">Indonésio</option>
-              <option value="vie">Vietnamita</option>
-              <option value="tha">Tailandês</option>
-              <option value="ara">Árabe</option>
-            </optgroup>
-          </select>
-        </div>
-        <div class="field">
-          <label>Modo OCR</label>
-          <select id="ocr-psm">
-            <option value="11" data-i18n="psmAuto">Automático (PSM 11)</option>
-            <option value="6"  data-i18n="psmBlock">Bloco (PSM 6)</option>
-            <option value="7"  data-i18n="psmLine">Linha (PSM 7)</option>
-            <option value="8"  data-i18n="psmWord">Palavra (PSM 8)</option>
-          </select>
-        </div>
+    <div class="sec">
+      <div class="sec-title">🌐 Tradução</div>
+      <div class="field">
+        <label>Idioma de destino</label>
+        <select id="trans-lang">
+          <option value="pt">Português</option>
+          <option value="en">Inglês</option>
+          <option value="es">Espanhol</option>
+          <option value="fr">Francês</option>
+          <option value="de">Alemão</option>
+          <option value="it">Italiano</option>
+          <option value="ru">Russo</option>
+          <option value="zh">Chinês</option>
+          <option value="ko">Coreano</option>
+          <option value="id">Indonésio</option>
+        </select>
       </div>
-
-      <div class="section">
-        <div class="section-title" data-i18n="secTranslate">Tradução</div>
-        <div class="field">
-          <label data-i18n="lblDstLang">Idioma de destino</label>
-          <select id="trans-lang">
-            <option value="pt">Português</option>
-            <option value="en">Inglês</option>
-            <option value="es">Espanhol</option>
-            <option value="fr">Francês</option>
-            <option value="de">Alemão</option>
-            <option value="it">Italiano</option>
-            <option value="ru">Russo</option>
-            <option value="zh">Chinês</option>
-            <option value="ko">Coreano</option>
-            <option value="id">Indonésio</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-title" data-i18n="secTools">Ferramentas</div>
-        <div class="field">
-          <label data-i18n="lblBrushSize">Tamanho do pincel</label>
-          <div class="range-group">
-            <input id="tool-size" type="range" min="2" max="120" value="20" />
-            <span class="range-val" id="tool-size-val">20</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>Cor</label>
-          <input id="tool-color" type="color" value="#ffffff" style="width:100%;height:28px;padding:1px;cursor:pointer;border-radius:4px;" />
-        </div>
-        <div class="field">
-          <label data-i18n="lblThreshold">Limiar inpaint text</label>
-          <div class="range-group">
-            <input id="inpaint-threshold" type="range" min="30" max="200" value="85" />
-            <span class="range-val" id="inpaint-threshold-val">85</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Ações rápidas</div>
-        <button id="btn-ocr-all-2"   class="action-btn" disabled>🔍 OCR completo da página</button>
-        <button id="btn-trans-all-2" class="action-btn" disabled>🌐 Traduzir todos os blocos</button>
-        <button id="btn-clear-all"   class="action-btn" style="color:var(--c-danger)">🗑 Remover todas as caixas</button>
-      </div>
-
     </div>
 
-    <!-- Blocks tab -->
-    <div class="panel-content" id="tab-blocks">
-      <div id="block-list"></div>
+    <div class="sec">
+      <div class="sec-title">🎨 Inpaint</div>
+      <div class="field">
+        <label>Limiar de texto <span id="inpaint-threshold-val" class="field-val">85</span></label>
+        <input id="inpaint-threshold" type="range" min="30" max="200" value="85" style="width:100%;accent-color:var(--c-accent)"/>
+      </div>
     </div>
 
-    <!-- Box editor (bottom of right panel, shown when a block is selected) -->
-    <div id="box-editor" class="hidden"></div>
+    <div class="sec">
+      <div class="sec-title">⚡ Ações rápidas</div>
+      <button id="btn-ocr-all-2"   class="action-btn" disabled>🔍 OCR em toda a página</button>
+      <button id="btn-trans-all-2" class="action-btn" disabled>🌐 Traduzir todos os blocos</button>
+      <button id="btn-clear-all"   class="action-btn danger">🗑 Remover todas as caixas</button>
+    </div>
 
-  </aside>
+  </div>
 
+  <!-- Tab: Caixas -->
+  <div class="panel-content" id="tab-blocks">
+    <div id="block-list"></div>
+  </div>
+
+  <!-- Editor de caixa selecionada -->
+  <div id="box-editor" class="hidden"></div>
+
+</aside>
+</div><!-- #body-row -->
 </div><!-- #app -->
 
 <script type="module" src="js/app.js"></script>
-
 <script>
 // ── Tab switching ──────────────────────────────────────────────────────────
 document.querySelectorAll('.panel-tab').forEach(tab => {
@@ -238,25 +242,30 @@ document.querySelectorAll('.panel-tab').forEach(tab => {
     document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.panel-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    const target = document.getElementById('tab-' + tab.dataset.tab);
-    if (target) target.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab)?.classList.add('active');
   });
 });
 
 // ── Zoom buttons ───────────────────────────────────────────────────────────
 document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
   const r = document.getElementById('zoom-range');
-  if (r) { r.value = Math.min(800, parseInt(r.value) + 20); r.dispatchEvent(new Event('input')); }
+  if (!r) return;
+  r.value = Math.min(800, parseInt(r.value) + 20);
+  r.dispatchEvent(new Event('input'));
 });
 document.getElementById('btn-zoom-out')?.addEventListener('click', () => {
   const r = document.getElementById('zoom-range');
-  if (r) { r.value = Math.max(5, parseInt(r.value) - 20); r.dispatchEvent(new Event('input')); }
+  if (!r) return;
+  r.value = Math.max(5, parseInt(r.value) - 20);
+  r.dispatchEvent(new Event('input'));
+});
+document.getElementById('btn-zoom-fit')?.addEventListener('click', () => {
+  document.getElementById('btn-fit')?.click();
 });
 
-// ── Tool size / color (wired before app.js fully loads) ────────────────────
+// ── Tool size / color ──────────────────────────────────────────────────────
 document.getElementById('tool-size')?.addEventListener('input', e => {
   document.getElementById('tool-size-val').textContent = e.target.value;
-  // Will be picked up by renderer via a custom event
   document.dispatchEvent(new CustomEvent('met:toolsize', { detail: parseInt(e.target.value) }));
 });
 document.getElementById('tool-color')?.addEventListener('input', e => {
@@ -269,35 +278,24 @@ document.getElementById('inpaint-threshold')?.addEventListener('input', e => {
 
 // ── Keyboard tool shortcuts ────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-  const map = { s:'select', l:'lasso', k:'stroke', b:'brush', e:'eraser', c:'clone' };
-  const tool = map[e.key.toLowerCase()];
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  const MAP = { s:'select', l:'lasso', k:'stroke', b:'brush', e:'eraser', c:'clone' };
+  const tool = MAP[e.key.toLowerCase()];
   if (tool) {
-    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.tool === tool);
-    });
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
     document.dispatchEvent(new CustomEvent('met:tool', { detail: tool }));
   }
   if (e.key === ' ') {
     e.preventDefault();
-    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.tool === 'pan');
-    });
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === 'pan'));
     document.dispatchEvent(new CustomEvent('met:tool', { detail: 'pan' }));
   }
 });
 
-// ── btn-clear-all ──────────────────────────────────────────────────────────
-document.getElementById('btn-clear-all')?.addEventListener('click', () => {
-  document.dispatchEvent(new CustomEvent('met:clearall'));
-});
-
-// ── Mirror btn-ocr-all-2 / btn-trans-all-2 ────────────────────────────────
-document.getElementById('btn-ocr-all-2')?.addEventListener('click', () =>
-  document.getElementById('btn-ocr-all')?.click());
-document.getElementById('btn-trans-all-2')?.addEventListener('click', () =>
-  document.getElementById('btn-trans-all')?.click());
+// ── Mirror quick-action buttons ────────────────────────────────────────────
+document.getElementById('btn-ocr-all-2')?.addEventListener('click',   () => document.getElementById('btn-ocr-all')?.click());
+document.getElementById('btn-trans-all-2')?.addEventListener('click', () => document.getElementById('btn-trans-all')?.click());
+document.getElementById('btn-clear-all')?.addEventListener('click',   () => document.dispatchEvent(new CustomEvent('met:clearall')));
 </script>
-
 </body>
 </html>

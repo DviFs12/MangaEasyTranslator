@@ -1,68 +1,155 @@
-# MangaEasyTranslator v3
+# MangaEasyTranslator v10
 
-Aplicação web **100% frontend** para tradução de páginas de mangá.  
-Compatível com GitHub Pages — sem backend, sem login, sem custos.
+Editor web de scanlation para tradução de mangás, manhwas e manhuas.  
+100% frontend — funciona diretamente no navegador, sem servidor ou instalação.
 
-## Funcionalidades
+---
 
-- Upload de imagem (drag & drop ou clique)
-- OCR automático com Tesseract.js v4 (Japonês, Inglês, Chinês, Coreano)
-- Tradução automática com fallback: Google → MyMemory → LibreTranslate
-- **6 ferramentas de edição:** Pincel, Borracha, Blur, Fill, Clone Stamp, Seleção
-- Caixas de texto draggable + resizável + **rotacionável**
-- Seleção automática de fonte por contexto (Bangers, Anton, Oswald, etc.)
-- Preview em tempo real via requestAnimationFrame (sem travar a UI)
-- Pan/zoom fluido com scroll wheel + arrastar
-- Undo/Redo (25 níveis)
-- Exportar PNG final
+## Como usar
 
-## GitHub Pages
+### 1. Abrir uma imagem
 
-1. Faça upload/fork deste projeto para um repositório GitHub
-2. Vá em **Settings → Pages → Source: main branch, / (root)**
-3. Acesse `https://seu-usuario.github.io/nome-do-repo/`
+Arraste um arquivo PNG, JPG ou WEBP para a área central, ou clique nela para selecionar.
 
-## Rodar localmente
+Para retomar um trabalho anterior, clique em **📂 Carregar** e selecione um arquivo `.met10`.
 
-```bash
-# Qualquer servidor HTTP estático funciona
-npx serve .
-# ou
-python3 -m http.server 8080
-```
+---
 
-> ⚠️ Não abra `index.html` diretamente como `file://` — ES Modules exigem HTTP.
+### 2. Ferramentas de seleção
 
-## Atalhos de Teclado
+Use a barra à esquerda (inspirada no Photoshop) para escolher como selecionar regiões:
+
+| Ícone | Tecla | Descrição |
+|-------|-------|-----------|
+| ⬚ Selecionar | `S` | Retângulo de seleção |
+| 🔴 Laço | `L` | Seleção livre por polígono |
+| → Linha OCR | `K` | Desenhe uma linha sobre o texto para OCR orientado |
+| 🖌 Pincel | `B` | Pintura manual sobre a imagem |
+| ⬜ Borracha | `E` | Apaga pixels da imagem base |
+| 🔁 Clone | `C` | Carimbo clone (Alt+clique para definir a origem) |
+| ✋ Mover | `Space` ou `Alt` | Navegar pela imagem |
+
+---
+
+### 3. Ações sobre uma seleção
+
+Após criar uma seleção (retângulo, laço ou linha), uma barra aparece abaixo da seleção com:
+
+- **🔍 OCR** — detecta e extrai o texto da região selecionada
+- **🧹 Limpar** — remove somente os pixels escuros (texto), preservando o fundo
+- **🎨 Inpaint** — preenche a seleção reconstruindo o background
+- **📝 Texto** — cria uma caixa de texto na região para digitação manual
+- **✕** — cancela a seleção
+
+---
+
+### 4. OCR automático
+
+Clique em **🔍 OCR** no cabeçalho para detectar todo o texto da página de uma vez.
+
+Configure o idioma de origem no painel direito (⚙ Config) antes de executar.  
+Modos de segmentação disponíveis: Auto, Bloco, Linha, Palavra.
+
+---
+
+### 5. Tradução
+
+**Traduzir um bloco:** na lista de caixas (📝 Caixas), clique no botão 🌐 ao lado do bloco desejado.
+
+**Traduzir tudo:** clique em **🌐 Traduzir** no cabeçalho para traduzir todos os blocos com texto pendente.
+
+Configure o idioma de destino no painel ⚙ Config.
+
+---
+
+### 6. Gerenciar caixas de texto
+
+Na aba **📝 Caixas** do painel direito, cada bloco detectado mostra:
+
+- Texto original (OCR)
+- Tradução (se disponível)
+- Botões: **OCR** · **🌐 Traduzir** · **🧹 Limpar** · **🎨 Inpaint** · **Aplicar**
+
+Clique em um bloco para selecioná-lo. O editor aparece na parte inferior do painel com:
+- Campos editáveis para o texto OCR e a tradução
+- Fonte, tamanho, cor, fundo, opacidade, rotação, alinhamento
+
+**Arrastar:** clique e arraste a caixa no canvas para reposicioná-la.  
+**Redimensionar:** use as alças azuis nos cantos/bordas da caixa selecionada.  
+**Remover:** botão ✕ vermelho no canto superior da caixa ou na lista.
+
+---
+
+### 7. Aplicar tradução à imagem
+
+Clique em **Aplicar** no card do bloco para renderizar a tradução diretamente no canvas base.  
+A área original fica salva — o botão muda para **✓ Aplicado** e pode ser revertido pelo undo.
+
+---
+
+### 8. Limpar texto original
+
+Antes de aplicar a tradução, limpe o texto original do mangá:
+
+- **🧹 Limpar** (no card ou na toolbar de seleção): remove somente pixels escuros (ideal para texto sobre screentone)
+- **🎨 Inpaint** (no card ou toolbar): reconstrói o fundo da região inteira
+
+O limiar de detecção de pixels de texto pode ser ajustado em ⚙ Config > Limiar de texto.
+
+---
+
+### 9. Salvar e exportar
+
+| Ação | Como |
+|------|------|
+| Salvar projeto | **💾** no cabeçalho ou `Ctrl+S` — gera arquivo `.met10` com imagem e todas as caixas |
+| Carregar projeto | **📂** no cabeçalho |
+| Exportar PNG | **⬇ Exportar PNG** — salva a imagem final com as traduções compostas |
+
+O projeto é autossalvo no navegador a cada 30 segundos.
+
+---
+
+### 10. Atalhos de teclado
 
 | Tecla | Ação |
 |-------|------|
+| `S` | Ferramenta Selecionar |
+| `L` | Ferramenta Laço |
+| `K` | Ferramenta Linha OCR |
 | `B` | Pincel |
 | `E` | Borracha |
-| `U` | Blur |
-| `F` | Fill (balde) |
-| `C` | Clone Stamp |
-| `S` | Seleção retangular |
-| `+` / `-` | Zoom in/out |
-| `0` | Ajustar à tela |
-| `1` | Zoom 100% |
+| `C` | Clone |
+| `Space` / `Alt` | Mover (pan) |
+| `0` | Ajustar imagem à tela |
+| `+` / `-` | Zoom in / out |
 | `Ctrl+Z` | Desfazer |
 | `Ctrl+Y` | Refazer |
+| `Ctrl+S` | Salvar projeto |
 | `Delete` | Remover caixa selecionada |
-| `Esc` | Cancelar ferramenta / deselecionar |
+| `Esc` | Cancelar seleção |
 
-## Estrutura
+---
 
-```
-MangaEasyTranslator/
-├── index.html
-├── style.css
-└── js/
-    ├── app.js          — Orquestrador
-    ├── ocr.js          — Tesseract.js v4 (corrigido)
-    ├── translate.js    — Tradução multi-serviço com cache
-    ├── editor.js       — Canvas editor: pan/zoom/ferramentas/undo
-    ├── textManager.js  — Caixas de texto DOM + preview rAF
-    ├── fontManager.js  — Catálogo e seleção automática de fontes
-    └── ui.js           — Toast, loading, steps, blocks panel
-```
+### Zoom e navegação
+
+- **Scroll do mouse** — zoom centrado no cursor
+- **Alt + arrastar** ou **ferramenta Mover** — pan (mover a imagem)
+- **Barra de zoom** (parte inferior) — controle deslizante de zoom
+- **⊡** — ajustar à janela
+
+---
+
+## Idiomas da interface
+
+Clique em **🌐 EN / PT** no cabeçalho para alternar entre português e inglês.
+
+---
+
+## Hospedagem (GitHub Pages)
+
+1. Crie um repositório no GitHub
+2. Faça upload de todos os arquivos desta pasta
+3. Ative GitHub Pages (Settings → Pages → Deploy from branch → main)
+4. Acesse pelo link gerado — nenhuma configuração adicional necessária
+
