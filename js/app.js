@@ -1,945 +1,485 @@
 /**
- * app.js — v9
- *
- * Correções e melhorias vs v8:
- *
- *  1. BUG FIX — retângulo branco ao remover caixa aplicada:
- *     _applyTranslation agora captura um snapshot (getImageData) da região
- *     ANTES do fillRect e passa para textMgr.add() como snapshotRegion.
- *     textManager.remove() restaura esse snapshot automaticamente.
- *     Resultado: Delete/× numa caixa aplicada reverte visualmente o canvas.
- *
- *  2. BUG FIX — btnInpaintBox chamava removeSilent errado: quando o usuário
- *     faz inpaint numa caixa, ele quer manter o resultado do inpaint no canvas
- *     mas remover a caixa DOM. Usa textMgr.removeSilent() para isso.
- *
- *  3. NOVO — Cleaner avançado:
- *     onClean nos cards oferece 3 modos:
- *       'text'  → inpaintTextClean (detecta pixels escuros, margem fina)
- *       'lasso' → inpaintLasso com polígono do bloco (se block.lassoPoints)
- *       'rect'  → fillRect simples (comportamento legado)
- *     O modo é escolhido automaticamente pelo tipo do bloco.
- *
- *  4. BUG FIX — translateBatch não filtrava blocos sem texto mas com
- *     translation já preenchida manualmente: agora só re-traduz se text ≠ ''.
- *
- *  5. BUG FIX — _renderToolOpts para 'stroke' era no-op e caia no bloco
- *     de brush/eraser/clone antes de dar return; corrigido com return explícito.
- *
- *  6. BUG FIX — textMgr instanciado sem baseCanvas: agora passa baseCanvas
- *     como 4º argumento para habilitar snapshot/restore.
- *
- *  7. PERF — _renderBlockList usa DocumentFragment para batch DOM insert.
+ * app.js — MET10
+ * Application orchestrator. Wires together all layers.
+ * All business logic lives here or in core/. UI layer only calls dispatch().
  */
 
-import { runOCR, runOCRCanvas, runOCRRegion, terminateWorker } from './ocr.js';
-import { translateBatch }      from './translate.js';
-import { CanvasEditor }        from './editor.js';
-import { TextManager }         from './textManager.js';
-import { pickFont, pickFontSize, FONTS } from './fontManager.js';
-import { inpaintRect, inpaintMask, inpaintLasso, inpaintTextClean } from './inpaint.js';
+import { ocrFullPage, ocrRegion, ocrLasso, ocrStroke } from './core/ocr.js';
+import { inpaintRect, inpaintLasso, inpaintTextOnly } from './core/inpaint.js';
+import { translateBatch } from './core/translate.js';
+import { Store } from './state/store.js';
 import {
-  buildProject, saveProjectFile, loadProjectFile,
-  restoreProject, autosave,
-} from './projectManager.js';
-import {
-  toast, showLoading, updateLoading, hideLoading,
-  setStep, setStatus, clearStatus,
-  renderBlocks, updateBlockCard, highlightBlock,
-} from './ui.js';
-import { initLang, toggleLang, t } from './i18n.js';
+  buildProjectData, saveProjectFile, loadProjectFile,
+  restoreProjectData, startAutosave, loadAutosave, exportPNG,
+} from './state/project.js';
+import { t } from './state/i18n.js';
+import { CanvasRenderer } from './renderer/canvas.js';
+import { TextRenderer } from './renderer/text.js';
+import { BlockPanel } from './ui/blockPanel.js';
+import { BoxEditor } from './ui/boxEditor.js';
+import { toast, showLoading, updateLoading, hideLoading, $ } from './ui/components.js';
 
-const $ = id => document.getElementById(id);
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const dropZone       = $('drop-zone');
+const fileInput      = $('file-input');
+const projInput      = $('project-file-input');
+const stage          = $('canvas-stage');
+const canvasWorld    = $('canvas-world');
+const baseCanvas     = $('base-canvas');
+const inpaintCanvas  = $('inpaint-canvas');
+const selCanvas      = $('selection-canvas');
+const overlayCanvas  = $('overlay-canvas');
+const previewCanvas  = $('preview-canvas');
+const blockListEl    = $('block-list');
+const boxEditorPanel = $('box-editor');
+const btnNew         = $('btn-new');
+const btnSave        = $('btn-save');
+const btnLoad        = $('btn-load');
+const btnExport      = $('btn-export');
+const btnOcrAll      = $('btn-ocr-all');
+const btnTransAll    = $('btn-trans-all');
+const btnUndo        = $('btn-undo');
+const btnRedo        = $('btn-redo');
+const btnFit         = $('btn-fit');
+const btnLang        = $('btn-lang');
+const zoomRange      = $('zoom-range');
+const zoomVal        = $('zoom-val');
+const ocrLangSel     = $('ocr-lang');
+const ocrPsmSel      = $('ocr-psm');
+const transLangSel   = $('trans-lang');
+const selToolbar     = $('sel-toolbar');
+const btnSelOcr      = $('btn-sel-ocr');
+const btnSelClean    = $('btn-sel-clean');
+const btnSelInpaint  = $('btn-sel-inpaint');
+const btnSelText     = $('btn-sel-text');
+const btnSelClear    = $('btn-sel-clear');
 
-// ── DOM ───────────────────────────────────────────────────
-const dropZone    = $('drop-zone');
-const fileInput   = $('file-input');
-const projInput   = $('project-file-input');
-const stage       = $('canvas-stage');
-const world       = $('canvas-world');
-const baseCanvas  = $('base-canvas');
-const inpCanvas   = $('inpaint-canvas');
-const selCanvas   = $('selection-canvas');
-const ovrCanvas   = $('overlay-canvas');
-const prvCanvas   = $('preview-canvas');
-const textLayer   = $('text-layer');
+// ── Core modules ──────────────────────────────────────────────────────────
+const store    = new Store();
+const renderer = new CanvasRenderer({ stage, base: baseCanvas, inpaint: inpaintCanvas, selection: selCanvas, overlay: overlayCanvas });
+const textRend = new TextRenderer(canvasWorld, previewCanvas);
 
-const btnRunOCR        = $('btn-run-ocr');
-const btnTranslate     = $('btn-translate-all');
-const btnExport        = $('btn-export');
-const btnNew           = $('btn-new');
-const btnSaveProj      = $('btn-save-project');
-const btnLoadProj      = $('btn-load-project');
-const btnAddText       = $('btn-add-text');
-const btnAddManual     = $('btn-add-manual-block');
-const btnUndo          = $('btn-undo');
-const btnRedo          = $('btn-redo');
-const btnClearSel      = $('btn-clear-sel');
-const btnApplyInpSel   = $('btn-apply-inpaint-sel');
-const btnFit           = $('btn-fit');
-const btnZoomReset     = $('btn-zoom-reset');
-const btnDeleteBox     = $('btn-delete-box');
-const btnOcrBox        = $('btn-ocr-box');
-const btnInpaintBox    = $('btn-inpaint-box');
-const btnAutoLayout    = $('btn-auto-layout');
-const btnCopyOcr       = $('btn-copy-ocr');
-const btnSelectFile    = $('btn-select-file');
-const btnOcrSel        = $('btn-ocr-sel');
-const btnClearSel2     = $('btn-clear-sel2');
-const btnLangToggle    = $('btn-lang-toggle');
-
-const toolBtns    = document.querySelectorAll('.tool-btn[data-tool]');
-const ocrLang     = $('ocr-lang');
-const ocrPsm      = $('ocr-psm');
-const transLang   = $('trans-lang');
-const zoomRange   = $('zoom-range');
-const zoomVal     = $('zoom-val');
-const newTextIn   = $('new-text-input');
-const boxEditor   = $('box-editor');
-const boxIdLabel  = $('box-id-label');
-const boxOcrText  = $('box-ocr-text');
-const boxText     = $('box-text');
-const boxFontFam  = $('box-font-family');
-const boxFontSize = $('box-font-size');
-const boxFontAuto = $('box-font-auto');
-const boxColor    = $('box-color');
-const boxBg       = $('box-bg');
-const boxOpacity  = $('box-opacity');
-const boxOpacityV = $('box-opacity-val');
-const boxRotation = $('box-rotation');
-const boxRotationV= $('box-rotation-val');
-const alignBtns   = document.querySelectorAll('.align-btn');
-const selToolbar  = $('sel-toolbar');
-const selAngleInp = $('sel-angle');
-const selAngleVal = $('sel-angle-val');
-
-// ── i18n ─────────────────────────────────────────────────
-initLang();
-btnLangToggle?.addEventListener('click', () => { toggleLang(); _renderBlockList(); });
-
-// ── Populate font select ──────────────────────────────────
-if (boxFontFam)
-  boxFontFam.innerHTML = FONTS.map(f=>`<option value="${f.name}">${f.label}</option>`).join('');
-
-// ── STATE ─────────────────────────────────────────────────
-const state = {
-  image:         null,
-  blocks:        [],
-  selectedBlock: null,
-  _blockCounter: 0,
-};
-
-// ── MODULES ───────────────────────────────────────────────
-const editor = new CanvasEditor({
-  stage, world, base: baseCanvas,
-  inpaint: inpCanvas, selection: selCanvas, overlay: ovrCanvas,
+const blockPanel = new BlockPanel(blockListEl, {
+  onSelect:  id => dispatch({ type: 'SELECT_BLOCK',  payload: { id } }),
+  onRemove:  id => _removeBlock(id),
+  onOcr:     id => _ocrBlock(id),
+  onClean:   id => _cleanBlock(id),
+  onInpaint: id => _inpaintBlock(id),
+  onApply:   id => _applyBlock(id),
 });
-// FIX: passa baseCanvas como 4º arg para habilitar snapshot/restore
-const textMgr = new TextManager(textLayer, prvCanvas, editor, baseCanvas);
-editor.onZoomChange = syncZoomUI;
 
-editor.onSelectionChange = (data, tool) => {
-  if (!data) {
-    _hideSelToolbar(); btnClearSel?.classList.add('hidden');
-    btnApplyInpSel?.classList.add('hidden'); return;
+const boxEditor = new BoxEditor(boxEditorPanel, (id, patch) => {
+  dispatch({ type: 'UPDATE_BLOCK', payload: { id, ...patch } });
+});
+
+let _inpaintThreshold = 85;
+document.addEventListener('met:threshold', e => { _inpaintThreshold = e.detail; });
+
+// ── Dispatch ──────────────────────────────────────────────────────────────
+function dispatch(action) { store.dispatch(action); }
+
+// ── State subscription ────────────────────────────────────────────────────
+store.subscribe((state, action) => _syncUI(state, action));
+
+function _syncUI(state, action) {
+  const lang = state.i18n;
+  blockPanel.setLang(lang);
+  boxEditor.setLang(lang);
+
+  const blockMutations = new Set([
+    'ADD_BLOCK','ADD_BLOCKS','REMOVE_BLOCK','REMOVE_ALL_BLOCKS',
+    'UPDATE_BLOCK','MARK_APPLIED','SET_TRANSLATION','SET_ALL_TRANSLATIONS',
+    'UNDO','REDO','SELECT_BLOCK','DESELECT_BLOCK','LOAD_IMAGE','RESET',
+  ]);
+
+  if (blockMutations.has(action.type)) {
+    blockPanel.render(state.blocks, state.activeBlockId);
+    const ids = new Set(state.blocks.map(b => b.id));
+    for (const id of [...textRend._boxes.keys()]) if (!ids.has(id)) textRend.remove(id);
+    for (const block of state.blocks) textRend.update(block);
   }
-  btnClearSel?.classList.toggle('hidden', false);
-  btnApplyInpSel?.classList.toggle('hidden', tool !== 'inpaint');
 
-  if (tool === 'selection')  _showSelToolbar(data.rect);
-  if (tool === 'lasso')      _handleLassoOCR(data);
-  if (tool === 'text-box')   _createTextBoxFromRect(data.rect);
-  if (tool === 'stroke')     _handleStrokeOCR(data);
-};
+  if (action.type === 'SELECT_BLOCK') {
+    const block = state.blocks.find(b => b.id === state.activeBlockId);
+    if (block) { boxEditor.show(block); textRend.select(block.id); }
+    _activateTab('blocks');
+  }
+  if (action.type === 'DESELECT_BLOCK') { boxEditor.hide(); textRend.deselect(); }
 
-textMgr.onSelect = (id, data) => {
-  state.selectedBlock = id;
-  highlightBlock(id);
-  if (boxEditor)  boxEditor.style.display = '';
-  if (boxIdLabel) boxIdLabel.textContent  = `#${id.split('-')[1] ?? id}`;
-  _populateBoxEditor(data);
-};
-textMgr.onDeselect = () => {
-  if (boxEditor) boxEditor.style.display = 'none';
-  state.selectedBlock = null;
-};
+  if (action.type === 'LOAD_IMAGE' || action.type === 'RESET') {
+    textRend.clear(); boxEditor.hide();
+    blockPanel.render([], null);
+    dropZone?.classList.toggle('hidden', !!state.image);
+    _setImageActions(!!state.image);
+  }
 
-// ── SELECTION TOOLBAR ─────────────────────────────────────
-let _currentSelRect = null;
+  if (action.type === 'ADD_BLOCK' || action.type === 'ADD_BLOCKS') _setImageActions(true);
 
-function _showSelToolbar(rect) {
-  _currentSelRect = rect;
-  if (!selToolbar) return;
-  selToolbar.classList.remove('hidden');
-  if (selAngleInp) selAngleInp.value = 0;
-  if (selAngleVal) selAngleVal.textContent = '0';
-}
-function _hideSelToolbar() {
-  _currentSelRect = null;
-  selToolbar?.classList.add('hidden');
-  if (selAngleInp) selAngleInp.value = 0;
-  if (selAngleVal) selAngleVal.textContent = '0';
-  editor.setSelAngle(0);
+  if (btnUndo) btnUndo.disabled = !store.canUndoBlock() && !store.canUndoCanvas();
+  if (btnRedo) btnRedo.disabled = !store.canRedoBlock() && !store.canRedoCanvas();
+  if (zoomVal)   zoomVal.textContent   = Math.round(state.zoom * 100) + '%';
+  if (zoomRange) zoomRange.value       = Math.round(state.zoom * 100);
+  if (btnLang)   btnLang.textContent   = lang === 'pt' ? '🌐 EN' : '🌐 PT';
 }
 
-selAngleInp?.addEventListener('input', () => {
-  const deg = +selAngleInp.value;
-  if (selAngleVal) selAngleVal.textContent = deg;
-  editor.setSelAngle(deg);
-});
-
-btnOcrSel?.addEventListener('click', async () => {
-  if (!_currentSelRect) return;
-  const deg = +selAngleInp?.value || 0;
-  showLoading(t('loading-ocr-sel'), 10, deg ? `${deg}°` : '');
-  try {
-    const croppedCanvas = editor.getRotatedCrop(_currentSelRect, deg);
-    const block = await runOCRCanvas(croppedCanvas, ocrLang.value,
-      (pct, msg) => updateLoading(msg, pct), '6');
-    if (!block) { hideLoading(); toast(t('toast-no-text'), 'warning'); return; }
-    block.bbox  = { ..._currentSelRect };
-    block.angle = deg;
-    state.blocks.push(block);
-    state._blockCounter++;
-    hideLoading();
-    editor.drawOverlay(state.blocks, block.id);
-    _renderBlockList();
-    toast(`OCR: "${block.text.slice(0,35)}…"`, 'success');
-    _hideSelToolbar();
-    editor.clearSelection();
-    btnClearSel?.classList.add('hidden');
-    _deactivateAllTools();
-  } catch(err) { hideLoading(); toast('Erro OCR: '+err.message,'error'); }
-});
-
-btnClearSel2?.addEventListener('click', () => {
-  editor.clearSelection(); _hideSelToolbar();
-  btnClearSel?.classList.add('hidden');
-});
-
-// ── LASSO OCR — máscara real ──────────────────────────────
-async function _handleLassoOCR(data) {
-  if (!data?.points?.length || data.points.length < 3) return;
-  if (!data.rect || data.rect.w < 10 || data.rect.h < 10) return;
-
-  showLoading(t('loading-ocr-lasso'), 10);
-  try {
-    const maskedCanvas = editor.getLassoMaskedCrop(data.points);
-    const block = await runOCRCanvas(
-      maskedCanvas, ocrLang.value,
-      (pct, msg) => updateLoading(msg, pct), '6'
-    );
-    if (!block) { hideLoading(); toast(t('toast-no-text'), 'warning'); return; }
-    block.bbox         = { ...data.rect };
-    block.lassoPoints  = data.points;   // guarda para cleaner de laço
-    state.blocks.push(block);
-    hideLoading();
-    editor.drawOverlay(state.blocks, block.id);
-    _renderBlockList();
-    toast(`OCR laço: "${block.text.slice(0,30)}"`, 'success');
-    editor.clearSelection();
-    btnClearSel?.classList.add('hidden');
-    _deactivateAllTools();
-  } catch(err) { hideLoading(); toast('Erro: '+err.message,'error'); }
-}
-
-// ── STROKE OCR ────────────────────────────────────────────
-async function _handleStrokeOCR(data) {
-  if (!data?.points?.length || !data.rect) return;
-  const [p1, p2] = data.points;
-  if (!p1 || !p2) return;
-
-  showLoading(t('loading-ocr-stroke'), 20);
-  try {
-    const THICKNESS = Math.max(60, Math.floor(Math.hypot(data.rect.w, data.rect.h) * 0.6));
-    const { canvas: strokeCanvas, angle, rect } = editor.getStrokeCrop(p1, p2, THICKNESS);
-    const block = await runOCRCanvas(
-      strokeCanvas, ocrLang.value,
-      (pct, msg) => updateLoading(msg, pct), '7'
-    );
-    if (!block) { hideLoading(); toast(t('toast-no-text'), 'warning'); return; }
-    block.bbox  = rect;
-    block.angle = data.angle;
-    state.blocks.push(block);
-    state._blockCounter++;
-    hideLoading();
-    editor.drawOverlay(state.blocks, block.id);
-    _renderBlockList();
-    toast(`Linha OCR (${Math.round(data.angle)}°): "${block.text.slice(0,30)}"`, 'success');
-    editor.clearSelection();
-    btnClearSel?.classList.add('hidden');
-    _deactivateAllTools();
-  } catch(err) { hideLoading(); toast('Erro linha OCR: '+err.message,'error'); }
-}
-
-// ── LAYER VISIBILITY ─────────────────────────────────────
-document.querySelectorAll('.layer-eye').forEach(eye => {
-  eye.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const layer = eye.dataset.layer;
-    const item  = eye.closest('.layer-item');
-    const hidden = item.classList.toggle('hidden-layer');
-    eye.textContent = hidden ? '🙈' : '👁';
-    if (layer==='base'||layer==='inpaint'||layer==='overlay')
-      editor.setLayerVisible(layer, !hidden);
-    if (layer==='text') {
-      textLayer.style.opacity  = hidden ? '0' : '';
-      prvCanvas.style.opacity  = hidden ? '0' : '';
-    }
+function _setImageActions(hasImage) {
+  [btnExport, btnOcrAll, btnTransAll, $('btn-ocr-all-2'), $('btn-trans-all-2')].forEach(b => {
+    if (b) b.disabled = !hasImage;
   });
-});
+}
 
-// ── FILE UPLOAD ───────────────────────────────────────────
-btnSelectFile?.addEventListener('click', () => fileInput.click());
-dropZone.addEventListener('click', (e) => { if(e.target.closest('.drop-content')&&!e.target.matches('a')) fileInput.click(); });
-dropZone.addEventListener('dragover',  (e)=>{e.preventDefault();dropZone.classList.add('drag-over');});
-dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', (e)=>{
-  e.preventDefault(); dropZone.classList.remove('drag-over');
-  const f=e.dataTransfer.files[0];
-  if(f?.name.endsWith('.met')||f?.type==='application/json') _doLoadProject(f);
-  else if(f?.type.startsWith('image/')) _loadImageFile(f);
-  else toast('Use JPG/PNG ou .met','error');
-});
-fileInput.addEventListener('change',()=>{if(fileInput.files[0])_loadImageFile(fileInput.files[0]);});
-
+// ── Image load ────────────────────────────────────────────────────────────
 async function _loadImageFile(file) {
-  const reader=new FileReader();
-  reader.onload=(ev)=>{
-    const img=new Image();
-    img.onload=async()=>{await _initWithImage(img); toast(t('toast-img-loaded'),'success');};
-    img.src=ev.target.result;
-  };
-  reader.readAsDataURL(file);
+  showLoading('Carregando…', 20);
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await _loadImg(url);
+    URL.revokeObjectURL(url);
+    renderer.loadImage(img);
+    previewCanvas.width  = baseCanvas.width;
+    previewCanvas.height = baseCanvas.height;
+    dispatch({ type: 'LOAD_IMAGE', payload: { image: img, name: file.name.replace(/\.[^.]+$/, '') } });
+    toast(t(store.getState().i18n, 'toastLoaded'));
+    _startAutosave();
+  } catch (e) {
+    toast(t(store.getState().i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
 }
 
-async function _initWithImage(img) {
-  state.image=img; state.blocks=[]; state._blockCounter=0;
-  await terminateWorker();
-  editor.loadImage(img);
-  [selCanvas,ovrCanvas,prvCanvas].forEach(c=>{c.width=img.naturalWidth;c.height=img.naturalHeight;});
-  inpCanvas.width=img.naturalWidth; inpCanvas.height=img.naturalHeight;
-  textMgr.syncPreviewSize(img.naturalWidth,img.naturalHeight);
-  stage.style.display=''; dropZone.style.display='none';
-  syncZoomUI(editor.fitToStage(img.naturalWidth,img.naturalHeight));
-  btnRunOCR.disabled  = false;
-  btnAddText.disabled = false;
-  btnExport.disabled  = false;
-  btnTranslate.disabled = false;
-  setStep(2);
-  toast(t('toast-img-hint'), 'info', 4500);
+// ── OCR ───────────────────────────────────────────────────────────────────
+async function _runFullOCR() {
+  const state = store.getState();
+  if (!state.image) return;
+  const lang = ocrLangSel?.value || state.ocrLang;
+  const psm  = ocrPsmSel?.value  || '11';
+  showLoading(t(state.i18n, 'statusOcr'), 0);
+  try {
+    const blocks = await ocrFullPage(baseCanvas, { lang, psm, onProgress: updateLoading });
+    if (!blocks.length) { toast(t(state.i18n, 'toastNoText'), 'warn'); return; }
+    dispatch({ type: 'ADD_BLOCKS', payload: blocks });
+    toast(t(state.i18n, 'toastOcrDone', blocks.length));
+    _activateTab('blocks');
+  } catch (e) {
+    toast(t(state.i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
 }
 
-// ── PROJECT SAVE/LOAD ─────────────────────────────────────
-btnSaveProj?.addEventListener('click',()=>{
-  if(!state.image){toast(t('toast-no-image'),'warning');return;}
-  const proj=buildProject({
-    baseCanvas, inpaintCanvas:inpCanvas,
-    blocks:state.blocks, textBoxes:textMgr.getAllData(),
-    balloons:[], meta:{lang:ocrLang.value, transLang:transLang.value},
-  });
-  autosave(proj); saveProjectFile(proj);
-  toast(t('toast-saved'),'success');
-});
-btnLoadProj?.addEventListener('click',()=>projInput.click());
-$('link-load-project')?.addEventListener('click',(e)=>{e.preventDefault();projInput.click();});
-projInput?.addEventListener('change',async()=>{if(projInput.files[0])await _doLoadProject(projInput.files[0]);});
-
-async function _doLoadProject(file){
-  showLoading(t('loading-project'),30);
-  try{
-    const proj=await loadProjectFile(file);
-    const{image,blocks,textBoxes,meta}=await restoreProject(proj,{baseCanvas,inpaintCanvas:inpCanvas});
-    await _initWithImage(image);
-    state.blocks=blocks;
-    if(meta?.lang)      ocrLang.value  =meta.lang;
-    if(meta?.transLang) transLang.value=meta.transLang;
-    textMgr.clear();
-    for(const box of textBoxes) textMgr.add(box);
-    editor.drawOverlay(state.blocks,null);
-    _renderBlockList();
-    hideLoading();
-    toast(`${t('toast-loaded')} — ${blocks.length} blocos, ${textBoxes.length} caixas`,'success');
-    if(blocks.length) setStep(3);
-  }catch(err){hideLoading();toast('Erro: '+err.message,'error');}
-}
-
-// ── OCR (opcional) ────────────────────────────────────────
-btnRunOCR.addEventListener('click',async()=>{
-  if(!state.image) return;
-  btnRunOCR.disabled=true;
-  showLoading(t('loading-ocr-page'),0,t('loading-ocr-first'));
-  setStep(2);
-  try{
-    const blocks=await runOCR(baseCanvas,ocrLang.value,(pct,msg)=>updateLoading(msg,pct),ocrPsm?.value||'11');
-    state.blocks=blocks;
-    hideLoading(); setStep(3);
-    if(!blocks.length){
-      setStatus('ocr-status',t('status-ocr-empty'),'warning');
-      toast(t('toast-ocr-empty'),'warning');
+async function _ocrSelection(sel) {
+  const state = store.getState();
+  const lang  = ocrLangSel?.value || state.ocrLang;
+  showLoading(t(state.i18n, 'statusOcr'), 0);
+  try {
+    let result = null;
+    if (sel.type === 'stroke') {
+      const [p1, p2] = sel.points;
+      const r = await ocrStroke(baseCanvas, p1, p2, 40, { lang, onProgress: updateLoading });
+      result = r?.block ?? null;
+    } else if (sel.type === 'lasso' && sel.points?.length > 2) {
+      result = await ocrLasso(baseCanvas, sel.points, { lang, onProgress: updateLoading });
+      if (result) result.bbox = sel.rect;
     } else {
-      setStatus('ocr-status',`✓ ${blocks.length} ${t('status-ocr-done')}`,'success');
-      toast(`${blocks.length} ${t('toast-blocks-found')}`,'success');
+      result = await ocrRegion(baseCanvas, sel.rect, { lang, onProgress: updateLoading });
     }
-    editor.drawOverlay(blocks,null);
-    _renderBlockList();
-  }catch(err){
-    hideLoading();setStatus('ocr-status',`Erro: ${err.message}`,'error');
-    toast('Erro OCR: '+err.message,'error');
-  }finally{btnRunOCR.disabled=false;}
-});
-
-// ── MANUAL BLOCK ─────────────────────────────────────────
-btnAddManual?.addEventListener('click',()=>{
-  state._blockCounter++;
-  const num=state._blockCounter;
-  const id =`block-m${num}`;
-  const W=baseCanvas.width||800, H=baseCanvas.height||1200;
-  const block={
-    id, text:'', confidence:100,
-    bbox:{x:Math.floor(W*.05),y:Math.floor(H*.05+num*60),w:Math.floor(W*.4),h:50},
-    translation:'',visible:true,applied:false,manual:true,
-  };
-  state.blocks.push(block);
-  editor.drawOverlay(state.blocks,id);
-  _renderBlockList();
-  toast(`${t('toast-manual-block')} #${num}`,'info');
-});
-
-// ── TEXT-BOX TOOL ────────────────────────────────────────
-function _createTextBoxFromRect(rect){
-  if(rect.w<20||rect.h<20) return;
-  const fam   = boxFontFam?.value || 'Bangers';
-  const fSize = pickFontSize('…', {w:rect.w, h:rect.h}, fam);
-  textMgr.add({
-    x:rect.x, y:rect.y, w:rect.w, h:rect.h,
-    text:'…', fontSize:fSize, fontFamily:fam,
-    color:  boxColor?.value  || '#000000',
-    bgColor:boxBg?.value     || '#ffffff',
-    bgOpacity: (boxOpacity?.value ?? 90) / 100,
-    align:'center',
-  });
-  editor.clearSelection();
-  _deactivateAllTools();
-  toast(t('toast-box-created'),'success');
+    if (!result) { toast(t(state.i18n, 'toastNoText'), 'warn'); return; }
+    dispatch({ type: 'ADD_BLOCK', payload: result });
+    toast(t(state.i18n, 'toastOcrDone', 1));
+    renderer.clearSelection();
+    _activateTab('blocks');
+  } catch (e) {
+    toast(t(state.i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
 }
 
-// ── TRANSLATION ───────────────────────────────────────────
-btnTranslate.addEventListener('click',async()=>{
-  // FIX: só traduz blocos com texto (não re-traduz blocos vazios)
-  const translatable = state.blocks.filter(b => b.text?.trim());
-  if(!translatable.length){
-    toast(t('toast-no-translatable'),'warning'); return;
-  }
-  btnTranslate.disabled=true; setStep(3);
-  showLoading(t('loading-translate'),0,`${translatable.length} ${t('loading-blocks')}`);
-  translatable.forEach(b=>{b.translating=true;}); _renderBlockList();
-  let done=0;
-  await translateBatch(
-    translatable.map(b=>({id:b.id,text:b.text})),
-    ocrLang.value, transLang.value,
-    (id,res,err)=>{
-      const b=state.blocks.find(x=>x.id===id); if(!b)return;
-      b.translating=false;
-      if(res){b.translation=res.text; b.translatedBy=res.service;}
-      else    b.translationError=err?.message;
-      done++; updateBlockCard(b);
-      updateLoading(`${t('loading-translating')} ${done}/${translatable.length}`,(done/translatable.length)*100);
+async function _ocrBlock(id) {
+  const state = store.getState();
+  const block = state.blocks.find(b => b.id === id);
+  if (!block) return;
+  showLoading(t(state.i18n, 'statusOcr'), 0);
+  try {
+    const result = await ocrRegion(baseCanvas, block.bbox, { lang: ocrLangSel?.value || state.ocrLang, onProgress: updateLoading });
+    if (result) dispatch({ type: 'UPDATE_BLOCK', payload: { id, text: result.text, confidence: result.confidence } });
+  } catch (e) {
+    toast(t(state.i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
+}
+
+// ── Translation ───────────────────────────────────────────────────────────
+async function _translateAll() {
+  const state  = store.getState();
+  const toLang = transLangSel?.value || state.transLang;
+  const pending = state.blocks.filter(b => b.text && !b.translation);
+  if (!pending.length) { toast('Nada para traduzir', 'info'); return; }
+  showLoading(t(state.i18n, 'statusTranslating'), 0);
+  try {
+    const texts      = pending.map(b => b.text);
+    const translated = await translateBatch(texts, toLang, 'auto', {
+      onProgress: (done, total) => updateLoading(Math.round(done / total * 100), `${done}/${total}…`),
     });
-  hideLoading(); setStep(4);
-  const ok=state.blocks.filter(b=>b.translation).length;
-  setStatus('trans-status',`✓ ${ok}/${state.blocks.length} ${t('status-translated')}`,'success');
-  toast(`${ok} ${t('toast-translated')}`,'success');
-  btnTranslate.disabled=false; _renderBlockList();
-});
-
-// ── BLOCK LIST ────────────────────────────────────────────
-function _renderBlockList(){
-  renderBlocks(state.blocks,{
-    onSelect:         _selectBlock,
-    onToggleVis:      (id)=>{const b=state.blocks.find(x=>x.id===id);if(b){b.visible=!b.visible;editor.drawOverlay(state.blocks,state.selectedBlock);_renderBlockList();}},
-    onClean:          _cleanBlock,   // NOVO: substitui onErase
-    onInpaint:        _inpaintBlock,
-    onReOCR:          _reOCRBlock,
-    onDelete:         (id)=>{
-      state.blocks=state.blocks.filter(b=>b.id!==id);
-      textMgr.remove(id);   // remove com restore automático do canvas
-      editor.drawOverlay(state.blocks,state.selectedBlock);
-      _renderBlockList();
-    },
-    onApply:          _applyTranslation,
-    onOcrEdit:        (id,text)=>{const b=state.blocks.find(x=>x.id===id);if(b) b.text=text;},
-    onTranslationEdit:(id,text)=>{const b=state.blocks.find(x=>x.id===id);if(b) b.translation=text;},
-  });
+    const payload = pending.map((b, i) => ({ id: b.id, translation: translated[i] }));
+    dispatch({ type: 'SET_ALL_TRANSLATIONS', payload });
+    toast(t(state.i18n, 'toastTransDone'));
+  } catch (e) {
+    toast(t(state.i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
 }
 
-function _selectBlock(id){
-  state.selectedBlock=id; highlightBlock(id);
-  editor.drawOverlay(state.blocks,id);
-  const b=state.blocks.find(x=>x.id===id);
-  if(b) editor.panToCenter(b.bbox.x+b.bbox.w/2, b.bbox.y+b.bbox.h/2);
+// ── Inpaint / Clean ───────────────────────────────────────────────────────
+async function _inpaintSelection(sel) {
+  store.pushCanvasSnapshot(renderer.captureSnapshot());
+  showLoading(t(store.getState().i18n, 'statusInpainting'), 20);
+  try {
+    if (sel.type === 'lasso' && sel.points?.length > 2) inpaintLasso(baseCanvas, sel.points);
+    else { const { x, y, w, h } = sel.rect; inpaintRect(baseCanvas, x, y, w, h); }
+    toast(t(store.getState().i18n, 'toastInpaintDone'));
+    renderer.clearSelection();
+  } finally { hideLoading(); }
 }
 
-// ── CLEANER AVANÇADO ─────────────────────────────────────
-/**
- * 3 modos automáticos:
- *  - laço (lassoPoints): inpaintLasso → forma precisa do polígono
- *  - texto detectado: inpaintTextClean → só pixels escuros, margem fina
- *  - fallback: inpaintRect → limpa tudo (comportamento anterior)
- */
+async function _cleanSelection(sel) {
+  store.pushCanvasSnapshot(renderer.captureSnapshot());
+  const { x, y, w, h } = sel.rect;
+  inpaintTextOnly(baseCanvas, x, y, w, h, { threshold: _inpaintThreshold });
+  toast(t(store.getState().i18n, 'toastInpaintDone'));
+  renderer.clearSelection();
+}
+
 async function _cleanBlock(id) {
-  const b = state.blocks.find(x => x.id === id); if (!b) return;
-  showLoading(t('loading-inpaint'), 20);
-  await new Promise(r => setTimeout(r, 0));
+  const block = store.getState().blocks.find(b => b.id === id);
+  if (!block) return;
+  store.pushCanvasSnapshot(renderer.captureSnapshot());
+  const { x, y, w, h } = block.bbox;
+  inpaintTextOnly(baseCanvas, x, y, w, h, { threshold: _inpaintThreshold });
+  toast(t(store.getState().i18n, 'toastInpaintDone'));
+}
+
+async function _inpaintBlock(id) {
+  const block = store.getState().blocks.find(b => b.id === id);
+  if (!block) return;
+  store.pushCanvasSnapshot(renderer.captureSnapshot());
+  const { x, y, w, h } = block.bbox;
+  inpaintRect(baseCanvas, x, y, w, h);
+  toast(t(store.getState().i18n, 'toastInpaintDone'));
+}
+
+// ── Apply / Unapply ───────────────────────────────────────────────────────
+function _applyBlock(id) {
+  const block = store.getState().blocks.find(b => b.id === id);
+  if (!block?.translation) { toast('Sem tradução para aplicar', 'warn'); return; }
+  const { x, y, w, h } = block.bbox;
+  const snapshot = renderer.getRegionSnapshot(x, y, w, h);
+  const ctx = baseCanvas.getContext('2d');
+  textRend._renderBlockToCtx(ctx, block);
+  dispatch({ type: 'MARK_APPLIED', payload: { id, snapshotData: _imageDataToBase64(snapshot) } });
+}
+
+function _unapplyBlock(id) {
+  const block = store.getState().blocks.find(b => b.id === id);
+  if (!block?.applied || !block.snapshotData) return;
+  const { x, y, w, h } = block.bbox;
+  const img = new Image();
+  img.onload = () => baseCanvas.getContext('2d').drawImage(img, 0, 0, w, h, x, y, w, h);
+  img.src = block.snapshotData;
+  dispatch({ type: 'UPDATE_BLOCK', payload: { id, applied: false, snapshotData: null } });
+}
+
+// ── Remove ────────────────────────────────────────────────────────────────
+function _removeBlock(id) {
+  const block = store.getState().blocks.find(b => b.id === id);
+  if (!block) return;
+  if (block.applied) _unapplyBlock(id);
+  textRend.remove(id);
+  dispatch({ type: 'REMOVE_BLOCK', payload: { id } });
+}
+
+function _addTextAtSelection(sel) {
+  const { x, y, w, h } = sel.rect;
+  dispatch({ type: 'ADD_BLOCK', payload: {
+    id: `block-manual-${Date.now()}`, text: '', translation: 'Texto',
+    bbox: { x, y, w, h }, fontSize: 18, fontFamily: 'Bangers', visible: true, applied: false,
+  }});
+  renderer.clearSelection();
+  _activateTab('blocks');
+}
+
+// ── Undo / Redo ───────────────────────────────────────────────────────────
+function _undo() {
+  if (store.canUndoCanvas()) { const s = store.popCanvasUndo(); if (s) renderer.restoreSnapshot(s); }
+  store.undoBlock();
+}
+function _redo() {
+  if (store.canRedoCanvas()) { const s = store.popCanvasRedo(); if (s) renderer.restoreSnapshot(s); }
+  store.redoBlock();
+}
+
+// ── Project ───────────────────────────────────────────────────────────────
+function _saveProject() {
+  const state = store.getState();
+  if (!state.image) { toast('Nenhuma imagem carregada', 'warn'); return; }
+  saveProjectFile(buildProjectData(state, baseCanvas));
+  dispatch({ type: 'MARK_SAVED' });
+  toast(t(state.i18n, 'toastSaved'));
+}
+
+async function _loadProject(file) {
+  showLoading('Carregando projeto…', 20);
   try {
-    if (b.lassoPoints?.length >= 3) {
-      // Modo laço: usa máscara exata do polígono → não destrói bordas do balão
-      inpaintLasso(baseCanvas, b.lassoPoints, { feather: 2 });
-      toast(t('toast-clean-lasso'), 'success');
-    } else {
-      // Modo texto: detecta pixels escuros e limpa só eles
-      inpaintTextClean(baseCanvas, b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h, {
-        margin: 2, threshold: 90, feather: 2,
-      });
-      toast(t('toast-clean-text'), 'success');
-    }
-    hideLoading();
-  } catch(err) {
-    hideLoading(); toast('Erro cleaner: '+err.message,'error');
-  }
+    const data = await loadProjectFile(file);
+    const { img, blocks, ocrLang, transLang, name } = await restoreProjectData(data);
+    renderer.loadImage(img);
+    previewCanvas.width = baseCanvas.width; previewCanvas.height = baseCanvas.height;
+    dispatch({ type: 'LOAD_IMAGE', payload: { image: img, name } });
+    if (blocks.length) dispatch({ type: 'ADD_BLOCKS', payload: blocks });
+    if (ocrLangSel) ocrLangSel.value = ocrLang;
+    if (transLangSel) transLangSel.value = transLang;
+    toast(t(store.getState().i18n, 'toastProjectLoaded'));
+    _startAutosave();
+  } catch (e) {
+    toast(t(store.getState().i18n, 'toastError', e.message), 'error');
+  } finally { hideLoading(); }
 }
 
-// ── APPLY TRANSLATION — com snapshot ─────────────────────
-function _applyTranslation(id, text){
-  const b=state.blocks.find(x=>x.id===id);
-  if(!b||!text?.trim()){toast(t('toast-empty-text'),'warning');return;}
+function _export() {
+  const state = store.getState();
+  if (!state.image) return;
+  exportPNG(baseCanvas, previewCanvas, state.project.name || 'export');
+  toast(t(state.i18n, 'toastExported'));
+}
 
-  const useAuto = boxFontAuto?.checked !== false;
-  const font  = useAuto ? pickFont({text, bbox:b.bbox}) : (boxFontFam?.value || pickFont({text, bbox:b.bbox}));
-  const col   = boxColor?.value  || '#000000';
-  const bg    = boxBg?.value     || '#ffffff';
-  const bgOp  = (boxOpacity?.value ?? 90) / 100;
-  const align = document.querySelector('.align-btn.active')?.dataset.align || 'center';
-  const fSize = useAuto
-    ? pickFontSize(text, {w: b.bbox.w, h: b.bbox.h}, font)
-    : (+boxFontSize?.value || 18);
+function _startAutosave() {
+  startAutosave(() => {
+    const state = store.getState();
+    if (!state.image) return null;
+    try { return buildProjectData(state, baseCanvas); } catch (_) { return null; }
+  });
+}
 
-  // FIX: captura snapshot ANTES do fillRect para poder restaurar depois
-  const snapX = Math.max(0, b.bbox.x - 3);
-  const snapY = Math.max(0, b.bbox.y - 3);
-  const snapW = Math.min(b.bbox.w + 6, baseCanvas.width  - snapX);
-  const snapH = Math.min(b.bbox.h + 6, baseCanvas.height - snapY);
-  let snapshot = null;
+// ── Selection toolbar ─────────────────────────────────────────────────────
+let _currentSel = null;
+
+renderer.onSelectionChange = (sel, tool) => {
+  _currentSel = sel ? { ...sel, type: tool } : null;
+  if (!selToolbar) return;
+  if (!sel) { selToolbar.classList.add('hidden'); return; }
+  selToolbar.classList.remove('hidden');
+  const stageR = stage.getBoundingClientRect();
+  const sx = stageR.left + renderer.tx + (sel.rect.x + sel.rect.w / 2) * renderer.scale;
+  const sy = stageR.top  + renderer.ty + (sel.rect.y + sel.rect.h)     * renderer.scale + 10;
+  selToolbar.style.left = Math.min(window.innerWidth  - 280, Math.max(4, sx - 120)) + 'px';
+  selToolbar.style.top  = Math.min(window.innerHeight - 50,  Math.max(60, sy))       + 'px';
+};
+
+renderer.onZoomChange   = s  => dispatch({ type: 'SET_ZOOM',    payload: { zoom: s } });
+renderer.onCanvasChange = () => dispatch({ type: 'MARK_MODIFIED' });
+textRend.onSelect   = id => dispatch({ type: 'SELECT_BLOCK',  payload: { id } });
+textRend.onDeselect = ()  => dispatch({ type: 'DESELECT_BLOCK' });
+textRend.onChange   = (id, patch) => dispatch({ type: 'UPDATE_BLOCK', payload: { id, ...patch } });
+
+// ── Event wiring ──────────────────────────────────────────────────────────
+dropZone?.addEventListener('click',     () => fileInput?.click());
+dropZone?.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone?.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone?.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) _loadImageFile(f);
+});
+fileInput?.addEventListener('change', e => { const f = e.target.files[0]; if (f) _loadImageFile(f); e.target.value=''; });
+
+btnNew?.addEventListener('click', () => {
+  if (!window.confirm(t(store.getState().i18n, 'confirmNew'))) return;
+  dispatch({ type: 'RESET' });
+  textRend.clear(); boxEditor.hide(); renderer.clearSelection();
+  baseCanvas.getContext('2d').clearRect(0,0,baseCanvas.width,baseCanvas.height);
+  previewCanvas.getContext('2d').clearRect(0,0,previewCanvas.width,previewCanvas.height);
+});
+btnSave?.addEventListener('click', _saveProject);
+btnLoad?.addEventListener('click', () => projInput?.click());
+projInput?.addEventListener('change', e => { const f = e.target.files[0]; if (f) _loadProject(f); e.target.value=''; });
+btnExport?.addEventListener('click', _export);
+btnOcrAll?.addEventListener('click', _runFullOCR);
+btnTransAll?.addEventListener('click', _translateAll);
+btnFit?.addEventListener('click', () => renderer.fitToStage());
+btnLang?.addEventListener('click', () => {
+  const cur = store.getState().i18n;
+  dispatch({ type: 'SET_I18N', payload: { lang: cur === 'pt' ? 'en' : 'pt' } });
+  _applyI18n();
+});
+btnUndo?.addEventListener('click', _undo);
+btnRedo?.addEventListener('click', _redo);
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); _undo(); }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='y'||(e.shiftKey&&e.key==='z'))) { e.preventDefault(); _redo(); }
+  if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); _saveProject(); }
+  if ((e.key==='Delete'||e.key==='Backspace') && store.getState().activeBlockId) {
+    e.preventDefault(); _removeBlock(store.getState().activeBlockId);
+  }
+});
+
+document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderer.setTool(btn.dataset.tool);
+    dispatch({ type: 'SET_TOOL', payload: { tool: btn.dataset.tool } });
+  });
+});
+
+document.addEventListener('met:tool',      e => { const tool=e.detail; document.querySelectorAll('.tool-btn[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===tool)); renderer.setTool(tool); dispatch({type:'SET_TOOL',payload:{tool}}); });
+document.addEventListener('met:toolsize',  e => { renderer.toolSize  = e.detail; });
+document.addEventListener('met:toolcolor', e => { renderer.toolColor = e.detail; });
+document.addEventListener('met:clearall',  () => {
+  if (!store.getState().blocks.length) return;
+  if (!window.confirm(t(store.getState().i18n,'confirmDeleteAll'))) return;
+  store.getState().blocks.filter(b=>b.applied).forEach(b=>_unapplyBlock(b.id));
+  textRend.clear();
+  dispatch({ type: 'REMOVE_ALL_BLOCKS' });
+});
+
+btnSelOcr?.addEventListener('click',     () => { if (_currentSel) _ocrSelection(_currentSel); });
+btnSelClean?.addEventListener('click',   () => { if (_currentSel) _cleanSelection(_currentSel); });
+btnSelInpaint?.addEventListener('click', () => { if (_currentSel) _inpaintSelection(_currentSel); });
+btnSelText?.addEventListener('click',    () => { if (_currentSel) _addTextAtSelection(_currentSel); });
+btnSelClear?.addEventListener('click',   () => renderer.clearSelection());
+
+zoomRange?.addEventListener('input', e => renderer.setScale(parseInt(e.target.value)/100));
+ocrLangSel?.addEventListener('change',   e => dispatch({ type: 'SET_OCR_LANG',   payload: { lang: e.target.value } }));
+transLangSel?.addEventListener('change', e => dispatch({ type: 'SET_TRANS_LANG', payload: { lang: e.target.value } }));
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function _activateTab(name) {
+  document.querySelectorAll('.panel-tab').forEach(t => t.classList.toggle('active', t.dataset.tab===name));
+  document.querySelectorAll('.panel-content').forEach(c => c.classList.toggle('active', c.id===`tab-${name}`));
+}
+
+function _applyI18n() {
+  const lang = store.getState().i18n;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    const str = t(lang, key);
+    if (str && typeof str==='string') el.textContent = str;
+  });
+}
+
+function _loadImg(src) {
+  return new Promise((res,rej) => { const img=new Image(); img.onload=()=>res(img); img.onerror=rej; img.src=src; });
+}
+
+function _imageDataToBase64(imageData) {
+  const tmp=document.createElement('canvas');
+  tmp.width=imageData.width; tmp.height=imageData.height;
+  tmp.getContext('2d').putImageData(imageData,0,0);
+  return tmp.toDataURL('image/png');
+}
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────
+_applyI18n();
+(async () => {
   try {
-    const ctx = baseCanvas.getContext('2d', { willReadFrequently: true });
-    snapshot = ctx.getImageData(snapX, snapY, snapW, snapH);
-  } catch (_) {}
-
-  editor.fillRect(b.bbox.x, b.bbox.y, b.bbox.w, b.bbox.h, bg);
-
-  textMgr.add({
-    id, text,
-    x: b.bbox.x, y: b.bbox.y,
-    w: Math.max(b.bbox.w - 4, 60), h: b.bbox.h,
-    fontSize: fSize, fontFamily: font,
-    color: col, bgColor: bg, bgOpacity: bgOp, align,
-    // Passa snapshot para que remove() possa restaurar
-    snapshotRegion: snapshot, snapshotX: snapX, snapshotY: snapY,
-  });
-
-  b.applied = true;
-  editor.drawOverlay(state.blocks, state.selectedBlock);
-  _renderBlockList();
-  toast(`${t('toast-applied')} — ${font} ${fSize}px`, 'success');
-}
-
-// ── INPAINT por bloco ─────────────────────────────────────
-async function _inpaintBlock(id){
-  const b=state.blocks.find(x=>x.id===id); if(!b) return;
-  showLoading(t('loading-inpaint'),30);
-  try{
-    await new Promise(r=>setTimeout(r,0));
-    if (b.lassoPoints?.length >= 3) {
-      inpaintLasso(baseCanvas, b.lassoPoints, { feather: 2 });
-    } else {
-      inpaintRect(baseCanvas,b.bbox.x,b.bbox.y,b.bbox.w,b.bbox.h,
-        {method: b.bbox.w*b.bbox.h>6000 ? 'patch' : 'fmm'});
+    const data = await loadAutosave();
+    if (data?.imageData && window.confirm(t(store.getState().i18n,'autosaveFound'))) {
+      const blob = new Blob([JSON.stringify(data)],{type:'application/json'});
+      await _loadProject(new File([blob],'autosave.met10'));
     }
-    // FIX: após inpaint, remove caixa SEM restaurar canvas (o inpaint já limpou)
-    textMgr.removeSilent(id);
-    b.applied = false;
-    editor.drawOverlay(state.blocks, state.selectedBlock);
-    _renderBlockList();
-    hideLoading(); toast(t('toast-inpainted'),'success');
-  }catch(err){hideLoading(); toast('Erro: '+err.message,'error');}
-}
-
-btnApplyInpSel?.addEventListener('click',async()=>{
-  showLoading(t('loading-inpaint'),20);
-  try{
-    await new Promise(r=>setTimeout(r,0));
-    const mask=editor.getInpaintMask();
-    if(!mask.some(v=>v)){hideLoading();toast(t('toast-paint-first'),'warning');return;}
-    inpaintMask(baseCanvas,mask,{feather:2});
-    editor.clearInpaintLayer();
-    hideLoading(); btnApplyInpSel.classList.add('hidden');
-    toast(t('toast-inpainted'),'success');
-  }catch(err){hideLoading(); toast('Erro: '+err.message,'error');}
-});
-
-btnInpaintBox?.addEventListener('click',async()=>{
-  if(!textMgr.selectedId) return;
-  const box=textMgr.boxes.get(textMgr.selectedId); if(!box) return;
-  const d=box.data;
-  showLoading(t('loading-inpaint'),30);
-  await new Promise(r=>setTimeout(r,0));
-  try {
-    inpaintRect(baseCanvas,d.x,d.y,d.w,d.h,{method:'fmm'});
-    // FIX: removeSilent → não restaura canvas após inpaint intencional
-    textMgr.removeSilent(textMgr.selectedId);
-    hideLoading(); toast(t('toast-inpainted'),'success');
-  } catch(err) { hideLoading(); toast('Erro: '+err.message,'error'); }
-});
-
-// ── RE-OCR ────────────────────────────────────────────────
-async function _reOCRBlock(id){
-  const block=state.blocks.find(b=>b.id===id); if(!block) return;
-  showLoading(t('loading-reocr'),10);
-  try{
-    const nb=await runOCRRegion(baseCanvas,block.bbox,ocrLang.value,(pct,msg)=>updateLoading(msg,pct));
-    if(nb){block.text=nb.text; block.confidence=nb.confidence; block.translation='';}
-    hideLoading(); editor.drawOverlay(state.blocks,id); _renderBlockList();
-    toast(nb?`Re-OCR: "${nb.text.slice(0,30)}"`: t('toast-no-text'), nb?'success':'warning');
-  }catch(err){hideLoading(); toast('Erro: '+err.message,'error');}
-}
-
-// ── OCR on selected box ───────────────────────────────────
-btnOcrBox?.addEventListener('click',async()=>{
-  if(!textMgr.selectedId) return;
-  const box=textMgr.boxes.get(textMgr.selectedId); if(!box) return;
-  const d=box.data;
-  showLoading('OCR…',10);
-  try{
-    const block=await runOCRRegion(baseCanvas,{x:d.x,y:d.y,w:d.w,h:d.h},ocrLang.value,(pct,msg)=>updateLoading(msg,pct));
-    if(block){
-      textMgr.update(textMgr.selectedId,{text:block.text});
-      if(boxText)    boxText.value    = block.text;
-      if(boxOcrText) boxOcrText.value = block.text;
-    }
-    hideLoading(); toast(block?`OCR: ${block.text.slice(0,30)}`:t('toast-no-text'),block?'success':'warning');
-  }catch(err){hideLoading(); toast('Erro: '+err.message,'error');}
-});
-
-btnCopyOcr?.addEventListener('click',()=>{
-  if(boxOcrText&&boxText) boxText.value=boxOcrText.value;
-  textMgr.updateSelected({text:boxText?.value||''});
-});
-
-// ── AUTO LAYOUT ───────────────────────────────────────────
-btnAutoLayout?.addEventListener('click',()=>{
-  if(!textMgr.selectedId) return;
-  const box=textMgr.boxes.get(textMgr.selectedId); if(!box) return;
-  const d=box.data;
-  const font =pickFont({text:d.text, bbox:{w:d.w,h:d.h}});
-  const fSize=pickFontSize(d.text,{w:d.w,h:d.h},font);
-  textMgr.update(textMgr.selectedId,{fontFamily:font, fontSize:fSize});
-  if(boxFontFam)  boxFontFam.value  =font;
-  if(boxFontSize) boxFontSize.value =fSize;
-  toast(`Auto layout: ${font} ${fSize}px`,'info');
-});
-
-// ── TOOLS ─────────────────────────────────────────────────
-toolBtns.forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    const tool=btn.dataset.tool, was=btn.classList.contains('active');
-    toolBtns.forEach(b=>b.classList.remove('active'));
-    editor.setTool(null);
-    if(!was){
-      btn.classList.add('active'); editor.setTool(tool);
-      _renderToolOpts(tool);
-    }else _renderToolOpts(null);
-  });
-});
-
-function _deactivateAllTools(){
-  toolBtns.forEach(b=>b.classList.remove('active'));
-  editor.setTool(null);
-  _renderToolOpts(null);
-}
-
-function _renderToolOpts(tool){
-  const opts=$('tool-options'); if(!opts) return;
-  opts.innerHTML='';
-  if(!tool) return;
-  // FIX: return explícito em todos os ramos sem controles de tamanho
-  if(tool==='selection') { opts.innerHTML=`<p class="tip-text">${t('tip-selection')}</p>`; return; }
-  if(tool==='lasso')     { opts.innerHTML=`<p class="tip-text">${t('tip-lasso')}</p>`; return; }
-  if(tool==='text-box')  { opts.innerHTML=`<p class="tip-text">${t('tip-textbox')}</p>`; return; }
-  if(tool==='inpaint')   { opts.innerHTML=`<p class="tip-text">${t('tip-inpaint')}</p>`; return; }
-  if(tool==='stroke')    { opts.innerHTML=`<p class="tip-text">${t('tip-stroke')}</p>`; return; }
-  if(tool==='clone')     { opts.innerHTML=`<p class="tip-text">${t('tip-clone')}</p>`; editor.toast=toast; }
-  // Controles de tamanho (brush, eraser, blur, fill, clone)
-  const row=document.createElement('div'); row.className='tool-group';
-  row.innerHTML=`<label class="tool-label">${t('lbl-size-px')}: <span id="t-sv">20</span>px</label>
-    <input type="range" id="t-size" min="3" max="120" value="20" class="tool-range"/>`;
-  opts.appendChild(row);
-  if(tool==='brush'||tool==='fill'||tool==='eraser'){
-    const cr=document.createElement('div'); cr.className='tool-group';
-    cr.innerHTML=`<label class="tool-label">${t('lbl-color')}</label><input type="color" id="t-color" value="${tool==='eraser'?'#ffffff':'#000000'}" class="tool-color"/>`;
-    opts.appendChild(cr);
-    opts.querySelector('#t-color')?.addEventListener('input',e=>editor.setToolColor(e.target.value));
-  }
-  opts.querySelector('#t-size')?.addEventListener('input',e=>{
-    editor.setToolSize(+e.target.value);
-    const sv=opts.querySelector('#t-sv'); if(sv) sv.textContent=e.target.value;
-  });
-}
-
-btnClearSel?.addEventListener('click',()=>{
-  editor.clearSelection(); _hideSelToolbar();
-  btnClearSel.classList.add('hidden'); btnApplyInpSel?.classList.add('hidden');
-});
-
-// ── UNDO/REDO ─────────────────────────────────────────────
-btnUndo?.addEventListener('click',()=>{if(!editor.undo())toast(t('toast-nothing'),'warning');});
-btnRedo?.addEventListener('click',()=>{if(!editor.redo())toast(t('toast-nothing'),'warning');});
-
-// ── TEXTO MANUAL ─────────────────────────────────────────
-btnAddText?.addEventListener('click',()=>{
-  const text=newTextIn?.value.trim(); if(!text){toast(t('toast-type-text'),'warning');return;}
-  const fam=boxFontFam?.value||'Bangers';
-  const w=Math.floor(baseCanvas.width*.3);
-  const h=Math.max(60, Math.floor(baseCanvas.height*.05));
-  const fsz=boxFontAuto?.checked
-    ? pickFontSize(text,{w,h},fam)
-    : +boxFontSize?.value||18;
-  textMgr.add({text,
-    x:Math.floor(baseCanvas.width*.05), y:Math.floor(baseCanvas.height*.05),
-    w, h, fontSize:fsz, fontFamily:fam,
-    color:  boxColor?.value  || '#000000',
-    bgColor:boxBg?.value     || '#ffffff',
-    bgOpacity:(boxOpacity?.value??90)/100,
-    align: document.querySelector('.align-btn.active')?.dataset.align||'center',
-  });
-  if(newTextIn) newTextIn.value='';
-  toast(t('toast-box-added'),'success');
-});
-
-// ── BOX EDITOR LIVE UPDATE ────────────────────────────────
-function _populateBoxEditor(data){
-  if(boxOcrText){
-    const block=state.blocks.find(b=>b.id===data.id);
-    boxOcrText.value=block?.text||'';
-  }
-  if(boxText)    boxText.value    = data.text;
-  if(boxFontFam) boxFontFam.value = data.fontFamily;
-  if(boxFontSize)boxFontSize.value= data.fontSize;
-  if(boxColor)   boxColor.value   = data.color;
-  if(boxBg)      boxBg.value      = data.bgColor;
-  if(boxOpacity){
-    boxOpacity.value=Math.round(data.bgOpacity*100);
-    if(boxOpacityV) boxOpacityV.textContent=boxOpacity.value;
-  }
-  if(boxRotation){
-    boxRotation.value = data.rotation ?? 0;
-    if(boxRotationV) boxRotationV.textContent = data.rotation ?? 0;
-  }
-  alignBtns.forEach(b=>b.classList.toggle('active',b.dataset.align===data.align));
-}
-
-let _td;
-boxText?.addEventListener('input',()=>{
-  clearTimeout(_td);_td=setTimeout(()=>textMgr.updateSelected({text:boxText.value}),60);
-  if(boxFontAuto?.checked && textMgr.selectedId){
-    const box=textMgr.boxes.get(textMgr.selectedId);
-    if(box){
-      const fSize=pickFontSize(boxText.value,{w:box.data.w,h:box.data.h},box.data.fontFamily);
-      textMgr.updateSelected({fontSize:fSize});
-      if(boxFontSize) boxFontSize.value=fSize;
-    }
-  }
-});
-
-boxFontFam?.addEventListener('change',()=>{ textMgr.updateSelected({fontFamily:boxFontFam.value}); _recalcAutoSize(); });
-boxFontSize?.addEventListener('input',()=>{ if(!boxFontAuto?.checked) textMgr.updateSelected({fontSize:+boxFontSize.value||18}); });
-boxColor?.addEventListener('input',   ()=>textMgr.updateSelected({color:boxColor.value}));
-boxBg?.addEventListener('input',      ()=>textMgr.updateSelected({bgColor:boxBg.value}));
-boxOpacity?.addEventListener('input', ()=>{if(boxOpacityV)boxOpacityV.textContent=boxOpacity.value;textMgr.updateSelected({bgOpacity:boxOpacity.value/100});});
-boxRotation?.addEventListener('input',()=>{if(boxRotationV)boxRotationV.textContent=boxRotation.value;textMgr.updateSelected({rotation:+boxRotation.value});});
-alignBtns.forEach(btn=>btn.addEventListener('click',()=>{alignBtns.forEach(b=>b.classList.remove('active'));btn.classList.add('active');textMgr.updateSelected({align:btn.dataset.align});}));
-btnDeleteBox?.addEventListener('click',()=>{
-  if(textMgr.selectedId){
-    textMgr.remove(textMgr.selectedId);   // restore automático
-    toast(t('toast-box-removed'),'info');
-  }
-});
-
-function _recalcAutoSize(){
-  if(!boxFontAuto?.checked||!textMgr.selectedId) return;
-  const box=textMgr.boxes.get(textMgr.selectedId); if(!box) return;
-  const fSize=pickFontSize(box.data.text,{w:box.data.w,h:box.data.h},box.data.fontFamily);
-  textMgr.updateSelected({fontSize:fSize});
-  if(boxFontSize) boxFontSize.value=fSize;
-}
-
-// ── ZOOM ─────────────────────────────────────────────────
-zoomRange?.addEventListener('input',()=>{editor.setScale(+zoomRange.value/100);syncZoomUI(editor.scale);});
-btnFit?.addEventListener('click',()=>{if(!state.image)return;syncZoomUI(editor.fitToStage(state.image.naturalWidth,state.image.naturalHeight));});
-btnZoomReset?.addEventListener('click',()=>{editor.setScale(1);if(state.image)editor.centerInStage(state.image.naturalWidth,state.image.naturalHeight);syncZoomUI(1);});
-function syncZoomUI(s){if(zoomRange)zoomRange.value=Math.round(s*100);if(zoomVal)zoomVal.textContent=Math.round(s*100);}
-
-// ── EXPORT ───────────────────────────────────────────────
-btnExport?.addEventListener('click',()=>{
-  showLoading(t('loading-export'),70);
-  try{
-    const url=editor.exportImage(textMgr.getAllData());
-    Object.assign(document.createElement('a'),{download:`manga-${Date.now()}.png`,href:url}).click();
-    setStep(5); hideLoading(); toast(t('toast-exported'),'success');
-  }catch(e){hideLoading(); toast('Erro: '+e.message,'error');}
-});
-
-// ── NEW IMAGE ────────────────────────────────────────────
-btnNew?.addEventListener('click',async()=>{
-  if(!confirm(t('confirm-new'))) return;
-  await terminateWorker();
-  state.image=null; state.blocks=[];
-  editor.clearOverlay();
-  // clear sem restore (imagem nova de qualquer forma)
-  for(const id of [...textMgr.boxes.keys()]) textMgr.removeSilent(id);
-  stage.style.display='none'; dropZone.style.display='';
-  btnRunOCR.disabled=true; btnTranslate.disabled=true;
-  btnAddText.disabled=true; btnExport.disabled=true;
-  fileInput.value='';
-  clearStatus('ocr-status'); clearStatus('trans-status');
-  _renderBlockList(); setStep(1);
-  if(boxEditor) boxEditor.style.display='none';
-  _hideSelToolbar();
-});
-
-// ── KEYBOARD ─────────────────────────────────────────────
-document.addEventListener('keydown',(e)=>{
-  const tag=document.activeElement?.tagName;
-  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
-  const map={b:'brush',e:'eraser',u:'blur',f:'fill',c:'clone',s:'selection',l:'lasso',k:'stroke',i:'inpaint',t:'text-box'};
-  if(map[e.key]){document.querySelector(`.tool-btn[data-tool="${map[e.key]}"]`)?.click();return;}
-  if(e.ctrlKey&&e.key==='z'){e.preventDefault();btnUndo?.click();}
-  if(e.ctrlKey&&e.key==='y'){e.preventDefault();btnRedo?.click();}
-  if(e.ctrlKey&&e.key==='s'){e.preventDefault();btnSaveProj?.click();}
-  if(e.key==='0') btnFit?.click();
-  if(e.key==='1') btnZoomReset?.click();
-  if((e.key==='+'||e.key==='=')&&!e.ctrlKey){editor.setScale(editor.scale*1.15);syncZoomUI(editor.scale);}
-  if(e.key==='-'&&!e.ctrlKey){editor.setScale(editor.scale/1.15);syncZoomUI(editor.scale);}
-  if(e.key==='Escape'){
-    _deactivateAllTools(); editor.clearSelection();
-    textMgr.deselect(); _hideSelToolbar();
-  }
-  if((e.key==='Delete'||e.key==='Backspace')&&textMgr.selectedId){
-    textMgr.remove(textMgr.selectedId); toast(t('toast-box-removed'),'info');
-  }
-});
-
-// ── INIT ────────────────────────────────────────────────
-if(boxEditor) boxEditor.style.display='none';
-_renderBlockList(); setStep(1);
-toast('MangaEasyTranslator v9 🚀','info',3000);
-
-// ── i18n strings extras ───────────────────────────────────
-import { LANGS } from './i18n.js';
-Object.assign(LANGS.pt, {
-  'loading-ocr-sel':    'OCR da seleção…',
-  'loading-ocr-lasso':  'OCR do laço (com máscara)…',
-  'loading-ocr-stroke': 'Linha OCR…',
-  'loading-ocr-page':   'Iniciando OCR…',
-  'loading-ocr-first':  '1ª vez: aguarde (~15 MB)',
-  'loading-project':    'Carregando projeto…',
-  'loading-translate':  'Traduzindo…',
-  'loading-blocks':     'blocos',
-  'loading-translating':'Traduzindo…',
-  'loading-inpaint':    'Processando…',
-  'loading-reocr':      'Re-OCR…',
-  'loading-export':     'Exportando…',
-  'toast-no-text':      'Sem texto detectado.',
-  'toast-img-loaded':   'Imagem carregada!',
-  'toast-img-hint':     'Use OCR ou adicione blocos manualmente.',
-  'toast-no-image':     'Nenhuma imagem carregada.',
-  'toast-saved':        'Projeto salvo!',
-  'toast-loaded':       'Carregado',
-  'toast-ocr-empty':    'OCR sem resultado. Adicione blocos manualmente.',
-  'toast-blocks-found': 'blocos detectados!',
-  'toast-manual-block': 'Bloco manual',
-  'toast-box-created':  'Caixa criada. Edite no painel.',
-  'toast-no-translatable':'Nenhum bloco com texto para traduzir.',
-  'toast-erased':       'Área apagada.',
-  'toast-inpainted':    'Inpaint aplicado!',
-  'toast-clean-lasso':  'Limpeza por laço aplicada!',
-  'toast-clean-text':   'Limpeza de texto aplicada!',
-  'toast-paint-first':  'Pinte antes de aplicar.',
-  'toast-applied':      'Aplicado',
-  'toast-empty-text':   'Texto vazio.',
-  'toast-nothing':      'Nada para fazer.',
-  'toast-type-text':    'Digite o texto.',
-  'toast-box-added':    'Caixa adicionada.',
-  'toast-box-removed':  'Caixa removida.',
-  'toast-exported':     'Exportado!',
-  'status-ocr-empty':   'Nenhum texto detectado.',
-  'status-ocr-done':    'blocos detectados.',
-  'status-translated':  'traduzidos.',
-  'toast-translated':   'traduzidos.',
-  'confirm-new':        'Iniciar com nova imagem? O progresso será perdido.',
-  'tip-selection':      'Desenhe → barra de ângulo + botão OCR',
-  'tip-lasso':          'Click=ponto · Duplo-click=fechar · Clique-direito=fechar',
-  'tip-textbox':        'Desenhe o retângulo → caixa criada',
-  'tip-inpaint':        'Pinte a área → clique 🪄 Inpaint',
-  'tip-clone':          'Ctrl+click=fonte · Click=clona',
-  'tip-stroke':         'Clique e arraste sobre o texto → OCR pelo ângulo da linha',
-  'lbl-size-px':        'Tamanho',
-});
-Object.assign(LANGS.en, {
-  'loading-ocr-sel':    'Selection OCR…',
-  'loading-ocr-lasso':  'Lasso OCR (masked)…',
-  'loading-ocr-stroke': 'Line OCR…',
-  'loading-ocr-page':   'Starting OCR…',
-  'loading-ocr-first':  'First run: please wait (~15 MB)',
-  'loading-project':    'Loading project…',
-  'loading-translate':  'Translating…',
-  'loading-blocks':     'blocks',
-  'loading-translating':'Translating…',
-  'loading-inpaint':    'Processing…',
-  'loading-reocr':      'Re-OCR…',
-  'loading-export':     'Exporting…',
-  'toast-no-text':      'No text detected.',
-  'toast-img-loaded':   'Image loaded!',
-  'toast-img-hint':     'Use OCR or add blocks manually.',
-  'toast-no-image':     'No image loaded.',
-  'toast-saved':        'Project saved!',
-  'toast-loaded':       'Loaded',
-  'toast-ocr-empty':    'OCR returned nothing. Add blocks manually.',
-  'toast-blocks-found': 'blocks detected!',
-  'toast-manual-block': 'Manual block',
-  'toast-box-created':  'Box created. Edit in panel.',
-  'toast-no-translatable':'No blocks with text to translate.',
-  'toast-erased':       'Area erased.',
-  'toast-inpainted':    'Inpaint applied!',
-  'toast-clean-lasso':  'Lasso clean applied!',
-  'toast-clean-text':   'Text clean applied!',
-  'toast-paint-first':  'Paint first, then apply.',
-  'toast-applied':      'Applied',
-  'toast-empty-text':   'Empty text.',
-  'toast-nothing':      'Nothing to do.',
-  'toast-type-text':    'Type some text.',
-  'toast-box-added':    'Box added.',
-  'toast-box-removed':  'Box removed.',
-  'toast-exported':     'Exported!',
-  'status-ocr-empty':   'No text detected.',
-  'status-ocr-done':    'blocks detected.',
-  'status-translated':  'translated.',
-  'toast-translated':   'translated.',
-  'confirm-new':        'Start with a new image? Unsaved progress will be lost.',
-  'tip-selection':      'Draw → angle bar + OCR button appear',
-  'tip-lasso':          'Click=add point · Double-click=close · Right-click=close',
-  'tip-textbox':        'Draw rectangle → box created',
-  'tip-inpaint':        'Paint area → click 🪄 Inpaint',
-  'tip-clone':          'Ctrl+click=source · Click=clone',
-  'tip-stroke':         'Click and drag over text → auto OCR by line angle',
-  'lbl-size-px':        'Size',
-});
+  } catch(_) {}
+})();

@@ -3,324 +3,301 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MangaEasyTranslator v8</title>
+  <title>MangaEasyTranslator v10</title>
 
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;900&family=Anton&family=Oswald:wght@400;700&family=Permanent+Marker&family=Bebas+Neue&family=Comic+Neue:wght@700&family=Noto+Sans+JP&family=Luckiest+Guy&family=Black+Han+Sans&family=Schoolbell&family=Special+Elite&family=Shadows+Into+Light&family=Righteous&family=Fredoka+One&family=Lilita+One&family=Press+Start+2P&display=swap" rel="stylesheet" />
-
+  <!-- Tesseract OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
-  <link rel="stylesheet" href="style.css" />
+
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
 
-<header class="site-header">
-  <div class="header-inner">
+<div id="app">
+
+  <!-- ═══════════════════════════════════════════════════════
+       HEADER
+  ═══════════════════════════════════════════════════════ -->
+  <header id="header">
     <div class="logo">
       <span class="logo-icon">📖</span>
-      <span class="logo-text">Manga<span class="accent">Easy</span>Translator</span>
-      <span class="version-badge">v8</span>
+      <span>Manga<span class="accent">Easy</span>Translator</span>
+      <span class="ver">v10</span>
     </div>
-    <div class="header-actions">
-      <button id="btn-lang-toggle" class="btn btn-ghost btn-lang" data-i18n="btn-lang">🌐 EN</button>
-      <button id="btn-save-project" class="btn btn-ghost" title="Ctrl+S" data-i18n="save">💾 Salvar</button>
-      <button id="btn-load-project" class="btn btn-ghost" data-i18n="load">📂 Carregar</button>
-      <input id="project-file-input" type="file" accept=".met,.json" style="display:none" />
-      <button id="btn-new" class="btn btn-ghost" data-i18n="new">↺ Nova</button>
-      <button id="btn-export" class="btn btn-primary" disabled data-i18n="export">⬇ Exportar PNG</button>
-    </div>
-  </div>
-</header>
 
-<div class="steps-bar">
-  <div class="step active" data-step="1"><span class="step-num">1</span><span class="step-label" data-i18n="step-upload">Upload</span></div>
-  <div class="step-sep">›</div>
-  <div class="step" data-step="2"><span class="step-num">2</span><span class="step-label" data-i18n="step-ocr">OCR</span></div>
-  <div class="step-sep">›</div>
-  <div class="step" data-step="3"><span class="step-num">3</span><span class="step-label" data-i18n="step-translate">Tradução</span></div>
-  <div class="step-sep">›</div>
-  <div class="step" data-step="4"><span class="step-num">4</span><span class="step-label" data-i18n="step-edit">Edição</span></div>
-  <div class="step-sep">›</div>
-  <div class="step" data-step="5"><span class="step-num">5</span><span class="step-label" data-i18n="step-export">Exportar</span></div>
-</div>
+    <div class="header-sep"></div>
 
-<main class="app-layout">
+    <button id="btn-new"  class="btn" data-i18n="btnNew">↺ Nova</button>
+    <button id="btn-save" class="btn" data-i18n="btnSave">💾 Salvar</button>
+    <button id="btn-load" class="btn" data-i18n="btnLoad">📂 Carregar</button>
+    <input  id="project-file-input" type="file" accept=".met10,.json" style="display:none" />
 
-  <!-- ═══ LEFT PANEL ═══ -->
-  <aside class="panel panel-left" id="panel-left">
+    <div class="header-sep"></div>
 
-    <!-- OCR -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-ocr">🔍 OCR</h3>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-src-lang">Idioma de origem</label>
-        <select id="ocr-lang" class="tool-select">
-          <optgroup label="Asiático">
-            <option value="jpn">Japonês</option>
-            <option value="chi_sim">Chinês Simpl.</option>
-            <option value="chi_tra">Chinês Trad.</option>
-            <option value="kor">Coreano</option>
-          </optgroup>
-          <optgroup label="Europeu / Latino">
-            <option value="eng">Inglês</option>
-            <option value="por">Português</option>
-            <option value="spa">Espanhol</option>
-            <option value="fra">Francês</option>
-            <option value="deu">Alemão</option>
-            <option value="ita">Italiano</option>
-            <option value="rus">Russo</option>
-          </optgroup>
-          <optgroup label="Outros">
-            <option value="ind">Indonésio</option>
-            <option value="vie">Vietnamita</option>
-            <option value="tha">Tailandês</option>
-            <option value="ara">Árabe</option>
-          </optgroup>
-        </select>
-      </div>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-ocr-mode">Modo OCR (PSM)</label>
-        <select id="ocr-psm" class="tool-select">
-          <option value="11" data-i18n="psm-11">11 — Sparse (mangá)</option>
-          <option value="3"  data-i18n="psm-3">3 — Auto</option>
-          <option value="6"  data-i18n="psm-6">6 — Bloco único</option>
-          <option value="7"  data-i18n="psm-7">7 — Linha única</option>
-        </select>
-      </div>
-      <button id="btn-run-ocr" class="btn btn-accent w-full" disabled data-i18n="btn-run-ocr">🔍 OCR Página</button>
-      <div id="ocr-status" class="status-box hidden"></div>
-    </section>
+    <button id="btn-ocr-all"   class="btn" data-i18n="btnOcrAll"   disabled>🔍 OCR</button>
+    <button id="btn-trans-all" class="btn" data-i18n="btnTransAll" disabled>🌐 Traduzir</button>
 
-    <!-- TRADUÇÃO -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-translate">🌐 Tradução</h3>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-dst-lang">Idioma destino</label>
-        <select id="trans-lang" class="tool-select">
-          <option value="pt">Português</option>
-          <option value="en">Inglês</option>
-          <option value="es">Espanhol</option>
-          <option value="fr">Francês</option>
-          <option value="de">Alemão</option>
-          <option value="it">Italiano</option>
-          <option value="ru">Russo</option>
-          <option value="id">Indonésio</option>
-          <option value="nl">Holandês</option>
-          <option value="pl">Polonês</option>
-          <option value="tr">Turco</option>
-          <option value="ar">Árabe</option>
-          <option value="zh-CN">Chinês Simpl.</option>
-          <option value="ja">Japonês</option>
-        </select>
-      </div>
-      <button id="btn-translate-all" class="btn btn-accent w-full" disabled data-i18n="btn-translate">🌐 Traduzir Tudo</button>
-      <div id="trans-status" class="status-box hidden"></div>
-    </section>
+    <div class="header-sep"></div>
 
-    <!-- FERRAMENTAS -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-tools">🛠 Ferramentas</h3>
-      <div class="tool-grid">
-        <button class="tool-btn" data-tool="brush"     title="B" data-i18n="tool-brush">🖌 Pincel</button>
-        <button class="tool-btn" data-tool="eraser"    title="E" data-i18n="tool-eraser">⬜ Borracha</button>
-        <button class="tool-btn" data-tool="blur"      title="U" data-i18n="tool-blur">💧 Blur</button>
-        <button class="tool-btn" data-tool="inpaint"   title="I" data-i18n="tool-inpaint">🪄 Inpaint</button>
-        <button class="tool-btn" data-tool="fill"      title="F" data-i18n="tool-fill">🪣 Fill</button>
-        <button class="tool-btn" data-tool="clone"     title="C" data-i18n="tool-clone">🔁 Clone</button>
-        <button class="tool-btn" data-tool="selection" title="S" data-i18n="tool-selection">⬡ Seleção</button>
-        <button class="tool-btn" data-tool="lasso"     title="L" data-i18n="tool-lasso">🔵 Laço</button>
-        <button class="tool-btn tool-btn-highlight" data-tool="stroke" title="K" data-i18n="tool-stroke">📏 Linha OCR</button>
-        <button class="tool-btn" data-tool="text-box"  title="T" data-i18n="tool-textbox">📝 TextBox</button>
-      </div>
-      <div id="tool-options" class="tool-options"></div>
-      <div class="btn-row" style="margin-top:5px">
-        <button id="btn-undo"              class="btn btn-sm">↩</button>
-        <button id="btn-redo"              class="btn btn-sm">↪</button>
-        <button id="btn-clear-sel"         class="btn btn-sm hidden">✕ Sel</button>
-        <button id="btn-apply-inpaint-sel" class="btn btn-sm hidden">🪄 Inpaint</button>
-      </div>
-    </section>
+    <button id="btn-undo" class="btn btn-icon" title="Ctrl+Z" disabled>↩</button>
+    <button id="btn-redo" class="btn btn-icon" title="Ctrl+Y" disabled>↪</button>
 
-    <!-- CAMADAS -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-layers">🗂 Camadas</h3>
-      <div id="layers-panel" class="layers-list">
-        <div class="layer-item" data-layer="base">
-          <span class="layer-eye" data-layer="base">👁</span>
-          <span class="layer-name" data-i18n="layer-base">🖼 Imagem Base</span>
-        </div>
-        <div class="layer-item" data-layer="inpaint">
-          <span class="layer-eye" data-layer="inpaint">👁</span>
-          <span class="layer-name" data-i18n="layer-inpaint">🪄 Inpaint</span>
-        </div>
-        <div class="layer-item" data-layer="text">
-          <span class="layer-eye" data-layer="text">👁</span>
-          <span class="layer-name" data-i18n="layer-text">📝 Texto</span>
-        </div>
-        <div class="layer-item" data-layer="overlay">
-          <span class="layer-eye" data-layer="overlay">👁</span>
-          <span class="layer-name" data-i18n="layer-overlay">🔲 Boxes OCR</span>
-        </div>
-      </div>
-    </section>
+    <div class="header-spacer"></div>
 
-    <!-- ZOOM -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-zoom">🔭 Visualização</h3>
-      <div class="tool-group">
-        <label class="tool-label">Zoom: <span id="zoom-val">100</span>%</label>
-        <input type="range" id="zoom-range" min="10" max="400" value="100" class="tool-range" />
-      </div>
-      <div class="btn-row">
-        <button id="btn-fit"        class="btn btn-sm" data-i18n="btn-fit">⊡ Ajustar</button>
-        <button id="btn-zoom-reset" class="btn btn-sm" data-i18n="btn-zoom-reset">1:1</button>
-      </div>
-      <p class="tip-text" data-i18n="tip-zoom">🖱 Scroll=zoom · Arrastar=mover · Alt+drag=pan</p>
-    </section>
+    <button id="btn-lang"   class="btn">🌐 EN</button>
+    <button id="btn-export" class="btn btn-primary" data-i18n="btnExport" disabled>⬇ Exportar PNG</button>
+  </header>
 
-    <!-- TEXTO MANUAL -->
-    <section class="tool-section">
-      <h3 class="tool-title" data-i18n="sec-manual-text">✏ Texto Manual</h3>
-      <input type="text" id="new-text-input" class="tool-input" data-i18n-placeholder="ph-new-text" placeholder="Digite o texto..." />
-      <button id="btn-add-text" class="btn btn-accent w-full" disabled data-i18n="btn-add-text">+ Adicionar Caixa</button>
-    </section>
+  <!-- ═══════════════════════════════════════════════════════
+       LEFT TOOLBAR
+  ═══════════════════════════════════════════════════════ -->
+  <aside id="toolbar">
 
-    <!-- EDITAR CAIXA -->
-    <section class="tool-section" id="box-editor" style="display:none">
-      <h3 class="tool-title">
-        <span data-i18n="sec-box-edit">📦 Editar Caixa</span>
-        <span id="box-id-label" class="box-id-label"></span>
-      </h3>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-ocr-text">Texto original (editável)</label>
-        <textarea id="box-ocr-text" class="tool-input ocr-textarea" rows="2"
-          data-i18n-placeholder="ph-ocr-text" placeholder="Digite ou faça OCR…" readonly></textarea>
-        <div class="btn-row" style="margin-top:3px">
-          <button id="btn-copy-ocr" class="btn btn-sm flex-1" data-i18n="btn-copy-ocr">⬇ Usar OCR</button>
-          <button id="btn-ocr-box"  class="btn btn-sm flex-1" data-i18n="btn-ocr-box">🔍 Re-OCR</button>
-        </div>
-      </div>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-final-text">Texto traduzido / final</label>
-        <textarea id="box-text" class="tool-input" rows="3"
-          data-i18n-placeholder="ph-final-text" placeholder="Texto traduzido..."></textarea>
-      </div>
-      <div class="tool-row">
-        <div class="tool-group flex-1">
-          <label class="tool-label" data-i18n="lbl-font">Fonte</label>
-          <select id="box-font-family" class="tool-select"></select>
-        </div>
-        <div class="tool-group" style="width:54px">
-          <label class="tool-label" data-i18n="lbl-size">Tam.</label>
-          <input type="number" id="box-font-size" class="tool-input" value="18" min="6" max="120" />
-        </div>
-        <div class="tool-group" style="width:40px">
-          <label class="tool-label" data-i18n="lbl-auto">Auto</label>
-          <input type="checkbox" id="box-font-auto" checked class="tool-checkbox" />
-        </div>
-      </div>
-      <div class="tool-row">
-        <div class="tool-group">
-          <label class="tool-label" data-i18n="lbl-color">Cor</label>
-          <input type="color" id="box-color" value="#000000" class="tool-color" />
-        </div>
-        <div class="tool-group">
-          <label class="tool-label" data-i18n="lbl-bg">Fundo</label>
-          <input type="color" id="box-bg" value="#ffffff" class="tool-color" />
-        </div>
-        <div class="tool-group flex-1">
-          <label class="tool-label"><span data-i18n="lbl-opacity">Opac.</span> <span id="box-opacity-val">90</span>%</label>
-          <input type="range" id="box-opacity" min="0" max="100" value="90" class="tool-range" />
-        </div>
-      </div>
-      <div class="tool-group">
-        <label class="tool-label" data-i18n="lbl-align">Alinhamento</label>
-        <div class="btn-row">
-          <button class="btn btn-sm align-btn" data-align="left">⬅</button>
-          <button class="btn btn-sm align-btn active" data-align="center">↔</button>
-          <button class="btn btn-sm align-btn" data-align="right">➡</button>
-        </div>
-      </div>
-      <div class="tool-group">
-        <label class="tool-label"><span data-i18n="lbl-rotation">Rotação</span>: <span id="box-rotation-val">0</span>°</label>
-        <input type="range" id="box-rotation" min="-180" max="180" value="0" class="tool-range" />
-      </div>
-      <div class="tool-group">
-        <div class="btn-row">
-          <button id="btn-auto-layout" class="btn btn-sm flex-1" data-i18n="btn-layout">⚙ Layout</button>
-          <button id="btn-inpaint-box" class="btn btn-sm flex-1" data-i18n="btn-inpaint-box">🪄 Inpaint</button>
-          <button id="btn-delete-box"  class="btn btn-danger" style="padding:4px 8px">🗑</button>
-        </div>
-      </div>
-    </section>
+    <!-- Selection tools -->
+    <button class="tool-btn active" data-tool="select" title="Selecionar (S)">⬚</button>
+    <button class="tool-btn" data-tool="lasso"  title="Laço (L)">🔴</button>
+    <button class="tool-btn" data-tool="stroke" title="Linha OCR (K)">📏</button>
+
+    <div class="tool-sep"></div>
+
+    <!-- Paint tools -->
+    <button class="tool-btn" data-tool="brush"  title="Pincel (B)">🖌</button>
+    <button class="tool-btn" data-tool="eraser" title="Borracha (E)">⬜</button>
+    <button class="tool-btn" data-tool="clone"  title="Clone (C)">🔁</button>
+
+    <div class="tool-sep"></div>
+
+    <!-- Navigation -->
+    <button class="tool-btn" data-tool="pan" title="Mover (Space)">✋</button>
+    <button id="btn-fit" class="tool-btn" title="Ajustar (0)">⊡</button>
 
   </aside>
 
-  <!-- ═══ CENTER CANVAS ═══ -->
-  <div class="canvas-viewport" id="canvas-viewport">
+  <!-- ═══════════════════════════════════════════════════════
+       CANVAS STAGE
+  ═══════════════════════════════════════════════════════ -->
+  <main id="canvas-stage">
 
-    <div class="drop-zone" id="drop-zone">
-      <div class="drop-content">
-        <div class="drop-icon">🗒️</div>
-        <p class="drop-title" data-i18n="drop-title">Arraste uma página de mangá</p>
-        <p class="drop-sub"   data-i18n="drop-sub">ou clique para selecionar</p>
-        <button class="btn btn-primary btn-lg" id="btn-select-file" data-i18n="btn-select-file">Selecionar Imagem</button>
-        <p class="drop-hint"  data-i18n="drop-hint1">JPG · PNG · WebP</p>
-        <p class="drop-hint" style="font-size:.72rem;margin-top:4px">
-          <span data-i18n="drop-hint2">ou</span>
-          <a href="#" id="link-load-project" style="color:var(--c-accent2)" data-i18n="drop-link">carregar projeto .met</a>
-        </p>
-      </div>
-      <input type="file" id="file-input" accept="image/*" style="display:none" />
+    <!-- Drop zone (shown when no image loaded) -->
+    <div id="drop-zone">
+      <div class="drop-zone-icon">🖼</div>
+      <div class="drop-zone-label" data-i18n="statusDrop">Arraste uma imagem ou clique para abrir</div>
+      <div class="drop-zone-hint">PNG, JPG, WEBP</div>
+      <input id="file-input" type="file" accept="image/*" style="display:none" />
     </div>
 
-    <div class="canvas-stage" id="canvas-stage" style="display:none">
-      <div class="canvas-world" id="canvas-world">
-        <canvas id="base-canvas"></canvas>
-        <canvas id="inpaint-canvas"></canvas>
-        <canvas id="selection-canvas"></canvas>
-        <canvas id="overlay-canvas"></canvas>
-        <canvas id="preview-canvas"></canvas>
-        <div    id="text-layer"></div>
-      </div>
+    <!-- Canvas world (transformed) -->
+    <div id="canvas-world">
+      <canvas id="base-canvas"></canvas>
+      <canvas id="inpaint-canvas" style="display:none"></canvas>
+      <canvas id="selection-canvas"></canvas>
+      <canvas id="preview-canvas"></canvas>
+      <div id="text-layer"></div>
+      <canvas id="overlay-canvas"></canvas>
     </div>
 
-    <div class="loading-overlay" id="loading-overlay" style="display:none">
-      <div class="loading-card">
-        <div class="spinner"></div>
-        <p id="loading-msg">Processando…</p>
-        <div class="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
-        <p id="loading-sub" class="loading-sub"></p>
-      </div>
+    <!-- Zoom bar -->
+    <div id="zoom-bar">
+      <button id="btn-zoom-out" class="btn-icon" style="font-size:14px">−</button>
+      <input id="zoom-range" type="range" min="5" max="800" value="100" />
+      <span id="zoom-val">100%</span>
+      <button id="btn-zoom-in" class="btn-icon" style="font-size:14px">+</button>
     </div>
 
-    <!-- Selection toolbar (rect + angle) -->
-    <div id="sel-toolbar" class="sel-toolbar hidden">
-      <label class="sel-label">↻ <span id="sel-angle-val">0</span>°</label>
-      <input type="range" id="sel-angle" min="-45" max="45" value="0" class="sel-angle-range" />
-      <button id="btn-ocr-sel"    class="btn btn-sm" data-i18n="btn-ocr-sel">🔍 OCR</button>
-      <button id="btn-clear-sel2" class="btn btn-sm">✕</button>
-    </div>
+  </main>
 
+  <!-- Selection floating toolbar — rendered outside canvas-stage for z-index -->
+  <div id="sel-toolbar" class="hidden">
+    <button id="btn-sel-ocr"     class="sel-action-btn ocr">     🔍 <span data-i18n="actionOcr">OCR</span></button>
+    <button id="btn-sel-clean"   class="sel-action-btn clean">   🧹 <span data-i18n="actionClean">Limpar</span></button>
+    <button id="btn-sel-inpaint" class="sel-action-btn inpaint"> 🎨 <span data-i18n="actionInpaint">Inpaint</span></button>
+    <button id="btn-sel-text"    class="sel-action-btn text">    📝 <span data-i18n="actionText">Texto</span></button>
+    <button id="btn-sel-clear"   class="sel-action-btn clear">   ✕</button>
   </div>
 
-  <!-- ═══ RIGHT PANEL — BLOCKS ═══ -->
-  <aside class="panel panel-right" id="panel-right">
-    <div class="panel-header">
-      <h3 class="tool-title" data-i18n="sec-blocks">📋 Blocos</h3>
-      <div style="display:flex;gap:4px;align-items:center">
-        <span class="badge" id="block-count">0</span>
-        <button id="btn-add-manual-block" class="btn btn-sm" title="+" style="padding:2px 6px" data-i18n="btn-add-manual">+</button>
+  <!-- ═══════════════════════════════════════════════════════
+       RIGHT PANEL
+  ═══════════════════════════════════════════════════════ -->
+  <aside id="panel-right">
+
+    <!-- Tabs -->
+    <div class="panel-tabs">
+      <button class="panel-tab active" data-tab="settings">⚙ Config</button>
+      <button class="panel-tab"        data-tab="blocks">📝 Caixas</button>
+    </div>
+
+    <!-- Settings tab -->
+    <div class="panel-content active" id="tab-settings">
+
+      <div class="section">
+        <div class="section-title" data-i18n="secOcr">OCR</div>
+        <div class="field">
+          <label data-i18n="lblSrcLang">Idioma de origem</label>
+          <select id="ocr-lang">
+            <optgroup label="Asiático">
+              <option value="jpn">Japonês</option>
+              <option value="chi_sim">Chinês Simpl.</option>
+              <option value="chi_tra">Chinês Trad.</option>
+              <option value="kor">Coreano</option>
+            </optgroup>
+            <optgroup label="Latino">
+              <option value="eng">Inglês</option>
+              <option value="por">Português</option>
+              <option value="spa">Espanhol</option>
+              <option value="fra">Francês</option>
+              <option value="deu">Alemão</option>
+              <option value="ita">Italiano</option>
+              <option value="rus">Russo</option>
+            </optgroup>
+            <optgroup label="Outros">
+              <option value="ind">Indonésio</option>
+              <option value="vie">Vietnamita</option>
+              <option value="tha">Tailandês</option>
+              <option value="ara">Árabe</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="field">
+          <label>Modo OCR</label>
+          <select id="ocr-psm">
+            <option value="11" data-i18n="psmAuto">Automático (PSM 11)</option>
+            <option value="6"  data-i18n="psmBlock">Bloco (PSM 6)</option>
+            <option value="7"  data-i18n="psmLine">Linha (PSM 7)</option>
+            <option value="8"  data-i18n="psmWord">Palavra (PSM 8)</option>
+          </select>
+        </div>
       </div>
+
+      <div class="section">
+        <div class="section-title" data-i18n="secTranslate">Tradução</div>
+        <div class="field">
+          <label data-i18n="lblDstLang">Idioma de destino</label>
+          <select id="trans-lang">
+            <option value="pt">Português</option>
+            <option value="en">Inglês</option>
+            <option value="es">Espanhol</option>
+            <option value="fr">Francês</option>
+            <option value="de">Alemão</option>
+            <option value="it">Italiano</option>
+            <option value="ru">Russo</option>
+            <option value="zh">Chinês</option>
+            <option value="ko">Coreano</option>
+            <option value="id">Indonésio</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title" data-i18n="secTools">Ferramentas</div>
+        <div class="field">
+          <label data-i18n="lblBrushSize">Tamanho do pincel</label>
+          <div class="range-group">
+            <input id="tool-size" type="range" min="2" max="120" value="20" />
+            <span class="range-val" id="tool-size-val">20</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>Cor</label>
+          <input id="tool-color" type="color" value="#ffffff" style="width:100%;height:28px;padding:1px;cursor:pointer;border-radius:4px;" />
+        </div>
+        <div class="field">
+          <label data-i18n="lblThreshold">Limiar inpaint text</label>
+          <div class="range-group">
+            <input id="inpaint-threshold" type="range" min="30" max="200" value="85" />
+            <span class="range-val" id="inpaint-threshold-val">85</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Ações rápidas</div>
+        <button id="btn-ocr-all-2"   class="action-btn" disabled>🔍 OCR completo da página</button>
+        <button id="btn-trans-all-2" class="action-btn" disabled>🌐 Traduzir todos os blocos</button>
+        <button id="btn-clear-all"   class="action-btn" style="color:var(--c-danger)">🗑 Remover todas as caixas</button>
+      </div>
+
     </div>
-    <div id="blocks-list" class="blocks-list">
-      <p class="empty-hint" data-i18n="hint-blocks">Adicione blocos (+) ou rode o OCR.</p>
+
+    <!-- Blocks tab -->
+    <div class="panel-content" id="tab-blocks">
+      <div id="block-list"></div>
     </div>
+
+    <!-- Box editor (bottom of right panel, shown when a block is selected) -->
+    <div id="box-editor" class="hidden"></div>
+
   </aside>
 
-</main>
-
-<div id="toast" class="toast"></div>
+</div><!-- #app -->
 
 <script type="module" src="js/app.js"></script>
+
+<script>
+// ── Tab switching ──────────────────────────────────────────────────────────
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    const target = document.getElementById('tab-' + tab.dataset.tab);
+    if (target) target.classList.add('active');
+  });
+});
+
+// ── Zoom buttons ───────────────────────────────────────────────────────────
+document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
+  const r = document.getElementById('zoom-range');
+  if (r) { r.value = Math.min(800, parseInt(r.value) + 20); r.dispatchEvent(new Event('input')); }
+});
+document.getElementById('btn-zoom-out')?.addEventListener('click', () => {
+  const r = document.getElementById('zoom-range');
+  if (r) { r.value = Math.max(5, parseInt(r.value) - 20); r.dispatchEvent(new Event('input')); }
+});
+
+// ── Tool size / color (wired before app.js fully loads) ────────────────────
+document.getElementById('tool-size')?.addEventListener('input', e => {
+  document.getElementById('tool-size-val').textContent = e.target.value;
+  // Will be picked up by renderer via a custom event
+  document.dispatchEvent(new CustomEvent('met:toolsize', { detail: parseInt(e.target.value) }));
+});
+document.getElementById('tool-color')?.addEventListener('input', e => {
+  document.dispatchEvent(new CustomEvent('met:toolcolor', { detail: e.target.value }));
+});
+document.getElementById('inpaint-threshold')?.addEventListener('input', e => {
+  document.getElementById('inpaint-threshold-val').textContent = e.target.value;
+  document.dispatchEvent(new CustomEvent('met:threshold', { detail: parseInt(e.target.value) }));
+});
+
+// ── Keyboard tool shortcuts ────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const map = { s:'select', l:'lasso', k:'stroke', b:'brush', e:'eraser', c:'clone' };
+  const tool = map[e.key.toLowerCase()];
+  if (tool) {
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tool === tool);
+    });
+    document.dispatchEvent(new CustomEvent('met:tool', { detail: tool }));
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tool === 'pan');
+    });
+    document.dispatchEvent(new CustomEvent('met:tool', { detail: 'pan' }));
+  }
+});
+
+// ── btn-clear-all ──────────────────────────────────────────────────────────
+document.getElementById('btn-clear-all')?.addEventListener('click', () => {
+  document.dispatchEvent(new CustomEvent('met:clearall'));
+});
+
+// ── Mirror btn-ocr-all-2 / btn-trans-all-2 ────────────────────────────────
+document.getElementById('btn-ocr-all-2')?.addEventListener('click', () =>
+  document.getElementById('btn-ocr-all')?.click());
+document.getElementById('btn-trans-all-2')?.addEventListener('click', () =>
+  document.getElementById('btn-trans-all')?.click());
+</script>
+
 </body>
 </html>
