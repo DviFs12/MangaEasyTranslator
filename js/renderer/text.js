@@ -1,63 +1,60 @@
 /**
- * renderer/text.js — MET10 (reescrito)
+ * renderer/text.js — MET10
  *
- * CORREÇÕES:
- *  - text-layer agora é posicionado absolutamente sobre o canvas e tem as
- *    mesmas dimensões do canvas base (atualizado em setSize).
- *  - Drag/resize usa a escala do canvas-world via renderer.scale (passado
- *    como getter) em vez de tentar inferir pelo DOM.
- *  - _styleBox corrigida para usar apenas position:absolute (sem cssText
- *    que sobrescrevia tudo).
- *  - Adicionado top-resize handle e botão flutuante de delete.
+ * BUGS CORRIGIDOS:
+ *  - text-layer é dimensionado via setSize()
+ *  - Drag usa getScale() callback corretamente
+ *  - Deselect não dispara quando clica no box-editor
+ *  - _applyStyle não usa cssText (evita sobrescrever tudo)
+ *  - Preview canvas dimensionado corretamente
  */
 
 import { fitTextInBox } from '../core/layout.js';
 
 export class TextRenderer {
   /**
-   * @param {HTMLElement}       container     — #text-layer (dentro de #canvas-world)
-   * @param {HTMLCanvasElement} previewCanvas — canvas de preview (mesmas dims do base)
-   * @param {() => number}      getScale      — retorna a escala atual do renderer
+   * @param {HTMLElement}       layer         — #text-layer
+   * @param {HTMLCanvasElement} previewCanvas
+   * @param {() => number}      getScale      — retorna escala atual do renderer
    */
-  constructor(container, previewCanvas, getScale) {
-    this.container     = container;
-    this.previewCanvas = previewCanvas;
-    this.getScale      = getScale ?? (() => 1);
-    this.pCtx          = previewCanvas.getContext('2d');
+  constructor(layer, previewCanvas, getScale) {
+    this.layer    = layer;
+    this.preview  = previewCanvas;
+    this.pCtx     = previewCanvas.getContext('2d');
+    this.getScale = getScale ?? (() => 1);
 
-    this._boxes      = new Map();   // id → { el, data }
+    this._boxes      = new Map();  // id → { el, data }
     this._selectedId = null;
     this._rafId      = null;
 
-    this.onSelect   = null;
-    this.onDeselect = null;
-    this.onChange   = null;
+    this.onSelect   = null;  // (id) => void
+    this.onDeselect = null;  // () => void
+    this.onChange   = null;  // (id, patch | null) => void
 
-    // Deselect on outside click
     document.addEventListener('mousedown', e => {
-      if (!e.target.closest('.met-box') &&
-          !e.target.closest('#box-editor') &&
-          !e.target.closest('#panel-right')) {
+      if (
+        !e.target.closest('.met-box') &&
+        !e.target.closest('#box-editor')
+      ) {
         this.deselect();
       }
     });
   }
 
-  /** Deve ser chamado sempre que o canvas base muda de tamanho */
+  /** Chamar após loadImage para ajustar dimensões */
   setSize(w, h) {
-    this.container.style.width  = w + 'px';
-    this.container.style.height = h + 'px';
-    this.previewCanvas.width  = w;
-    this.previewCanvas.height = h;
-    this._schedPreview();
+    this.layer.style.width  = w + 'px';
+    this.layer.style.height = h + 'px';
+    this.preview.width  = w;
+    this.preview.height = h;
+    this._renderPreview();
   }
 
-  // ── Add / Update / Remove ─────────────────────────────────────────────
-
+  // ── CRUD ──────────────────────────────────────────────────────────────────
   add(block) {
     if (this._boxes.has(block.id)) { this.update(block); return; }
-    const el = this._createElement(block);
-    this.container.appendChild(el);
+    const el = this._createElement(block.id);
+    this.layer.appendChild(el);
     this._boxes.set(block.id, { el, data: { ...block } });
     this._bindDrag(el, block.id);
     this._applyStyle(block.id);
@@ -65,8 +62,8 @@ export class TextRenderer {
   }
 
   update(block) {
+    if (!this._boxes.has(block.id)) { this.add(block); return; }
     const entry = this._boxes.get(block.id);
-    if (!entry) { this.add(block); return; }
     Object.assign(entry.data, block);
     this._applyStyle(block.id);
     this._schedPreview();
@@ -85,13 +82,12 @@ export class TextRenderer {
     for (const { el } of this._boxes.values()) el.remove();
     this._boxes.clear();
     this._selectedId = null;
-    this._schedPreview();
+    this._renderPreview();
   }
 
   select(id) {
     if (this._selectedId && this._selectedId !== id) {
-      const prev = this._boxes.get(this._selectedId);
-      prev?.el.classList.remove('selected');
+      this._boxes.get(this._selectedId)?.el.classList.remove('selected');
     }
     this._selectedId = id;
     this._boxes.get(id)?.el.classList.add('selected');
@@ -104,8 +100,7 @@ export class TextRenderer {
     this.onDeselect?.();
   }
 
-  // ── Preview canvas ────────────────────────────────────────────────────
-
+  // ── Preview ───────────────────────────────────────────────────────────────
   _schedPreview() {
     if (this._rafId) return;
     this._rafId = requestAnimationFrame(() => {
@@ -116,27 +111,37 @@ export class TextRenderer {
 
   _renderPreview() {
     const ctx = this.pCtx;
-    ctx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
+    ctx.clearRect(0, 0, this.preview.width, this.preview.height);
     for (const { data } of this._boxes.values()) {
-      if (data.visible && data.translation) this._renderToCtx(ctx, data);
+      if (data.visible !== false && data.translation) {
+        this._renderToCtx(ctx, data);
+      }
     }
   }
 
-  /** Renderiza todas as caixas num ctx externo (para export) */
+  /** Renderiza todas as caixas num contexto externo (export) */
   renderToCanvas(ctx) {
     for (const { data } of this._boxes.values()) {
-      if (data.visible && data.translation) this._renderToCtx(ctx, data);
+      if (data.visible !== false && data.translation) {
+        this._renderToCtx(ctx, data);
+      }
     }
   }
 
-  /** Renderiza uma única caixa num ctx externo */
+  /** Renderiza uma caixa num contexto canvas */
   _renderToCtx(ctx, block) {
     const {
-      x, y, w, h, translation: text,
-      fontSize = 18, fontFamily = 'Bangers',
-      color = '#000000', bgColor = '#ffffff', bgOpacity = 0.9,
-      align = 'center', rotation = 0,
+      x, y, w, h,
+      translation: text,
+      fontSize    = 18,
+      fontFamily  = 'Bangers',
+      color       = '#000000',
+      bgColor     = '#ffffff',
+      bgOpacity   = 0.9,
+      align       = 'center',
+      rotation    = 0,
     } = block;
+
     if (!text || w <= 0 || h <= 0) return;
 
     const PAD = 6, LH = 1.25;
@@ -161,29 +166,29 @@ export class TextRenderer {
     ctx.fillStyle    = color;
     ctx.textBaseline = 'top';
     ctx.textAlign    = align;
-    const tx2    = align === 'center' ? w / 2 : align === 'right' ? w - PAD : PAD;
+    const tx2    = align === 'center' ? w/2 : align === 'right' ? w-PAD : PAD;
     const totalH = lines.length * lineH;
     const sy     = Math.max(PAD, (h - totalH) / 2);
     lines.forEach((ln, i) => ctx.fillText(ln, tx2, sy + i * lineH));
     ctx.restore();
   }
 
-  // ── DOM element ───────────────────────────────────────────────────────
-
-  _createElement(block) {
+  // ── DOM ───────────────────────────────────────────────────────────────────
+  _createElement(id) {
     const el = document.createElement('div');
     el.className  = 'met-box';
-    el.dataset.id = block.id;
+    el.dataset.id = id;
     el.innerHTML  = `
       <div class="met-box-body"></div>
       <div class="met-box-handle h-br" data-dir="br"></div>
       <div class="met-box-handle h-r"  data-dir="r"></div>
       <div class="met-box-handle h-b"  data-dir="b"></div>
-      <button class="met-box-del" title="Remover">✕</button>
+      <button class="met-box-del" title="Remover" type="button">✕</button>
     `;
     el.querySelector('.met-box-del').addEventListener('mousedown', e => {
       e.stopPropagation();
-      this.onChange?.(block.id, null);  // null = sinal de remoção
+      e.preventDefault();
+      this.onChange?.(id, null);
     });
     return el;
   }
@@ -193,13 +198,18 @@ export class TextRenderer {
     if (!entry) return;
     const { el, data } = entry;
     const {
-      x, y, w, h, translation,
-      fontSize = 18, fontFamily = 'Bangers',
-      color = '#000000', bgColor = '#ffffff', bgOpacity = 0.9,
-      align = 'center', rotation = 0, visible = true,
+      x, y, w, h,
+      translation,
+      fontSize   = 18,
+      fontFamily = 'Bangers',
+      color      = '#000000',
+      bgColor    = '#ffffff',
+      bgOpacity  = 0.9,
+      align      = 'center',
+      rotation   = 0,
+      visible    = true,
     } = data;
 
-    // Posição e dimensões
     el.style.left      = `${x}px`;
     el.style.top       = `${y}px`;
     el.style.width     = `${w}px`;
@@ -207,38 +217,38 @@ export class TextRenderer {
     el.style.transform = rotation ? `rotate(${rotation}deg)` : '';
     el.style.display   = visible ? '' : 'none';
 
-    // Conteúdo do corpo
     const body = el.querySelector('.met-box-body');
     if (!body) return;
 
-    const bgCSS = _rgba(bgColor, bgOpacity);
+    const bg = _rgba(bgColor, bgOpacity);
 
     if (translation) {
       const PAD = 6, LH = 1.25;
       const { fontSize: fs } = fitTextInBox(translation, w, h, {
         fontFamily, padding: PAD, lineHeightRatio: LH, maxSize: fontSize,
       });
-      body.style.cssText = [
-        'width:100%', 'height:100%', 'box-sizing:border-box',
-        `padding:${PAD}px`, `background:${bgCSS}`,
-        `color:${color}`, `font-family:"${fontFamily}",sans-serif`,
-        `font-size:${fs}px`, `line-height:${LH}`,
-        `text-align:${align}`, 'overflow:hidden',
-        'white-space:pre-wrap', 'word-break:break-word',
-        'display:flex', 'align-items:center', 'justify-content:center',
-        'pointer-events:none',
-      ].join(';');
+      body.style.cssText = `
+        width:100%;height:100%;box-sizing:border-box;
+        padding:${PAD}px;overflow:hidden;
+        background:${bg};
+        color:${color};
+        font-family:"${fontFamily}",sans-serif;
+        font-size:${fs}px;line-height:${LH};
+        text-align:${align};
+        white-space:pre-wrap;word-break:break-word;
+        display:flex;align-items:center;justify-content:center;
+        pointer-events:none;user-select:none;
+      `;
       body.textContent = translation;
     } else {
-      body.style.cssText = `width:100%;height:100%;background:${bgCSS};pointer-events:none;`;
+      body.style.cssText = `width:100%;height:100%;background:${bg};pointer-events:none;`;
       body.textContent   = '';
     }
   }
 
-  // ── Drag & Resize ────────────────────────────────────────────────────
-
+  // ── Drag & Resize ─────────────────────────────────────────────────────────
   _bindDrag(el, id) {
-    // Drag (body area)
+    // Drag (click no corpo da caixa)
     el.addEventListener('mousedown', e => {
       if (e.target.dataset.dir || e.target.classList.contains('met-box-del')) return;
       if (e.button !== 0) return;
@@ -249,21 +259,19 @@ export class TextRenderer {
 
       const entry = this._boxes.get(id);
       if (!entry) return;
-
-      const ox = entry.data.x, oy = entry.data.y;
-      const sx = e.clientX,    sy = e.clientY;
+      const { data } = entry;
+      const ox = data.x, oy = data.y;
+      const sx = e.clientX, sy = e.clientY;
 
       const onMove = ev => {
         const s  = this.getScale();
-        const nx = ox + (ev.clientX - sx) / s;
-        const ny = oy + (ev.clientY - sy) / s;
-        entry.data.x   = nx;
-        entry.data.y   = ny;
-        el.style.left  = `${nx}px`;
-        el.style.top   = `${ny}px`;
+        data.x   = ox + (ev.clientX - sx) / s;
+        data.y   = oy + (ev.clientY - sy) / s;
+        el.style.left = `${data.x}px`;
+        el.style.top  = `${data.y}px`;
       };
       const onUp = () => {
-        this.onChange?.(id, { x: entry.data.x, y: entry.data.y });
+        this.onChange?.(id, { x: data.x, y: data.y });
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup',   onUp);
       };
@@ -272,26 +280,26 @@ export class TextRenderer {
     });
 
     // Resize handles
-    el.querySelectorAll('.met-box-handle').forEach(h => {
-      h.addEventListener('mousedown', e => {
+    el.querySelectorAll('[data-dir]').forEach(handle => {
+      handle.addEventListener('mousedown', e => {
         e.stopPropagation(); e.preventDefault();
-        const dir   = h.dataset.dir;
+        const dir   = handle.dataset.dir;
         const entry = this._boxes.get(id);
         if (!entry) return;
-
-        const ow = entry.data.w, oh = entry.data.h;
-        const sx = e.clientX,    sy = e.clientY;
+        const { data } = entry;
+        const ow = data.w, oh = data.h;
+        const sx = e.clientX,  sy = e.clientY;
 
         const onMove = ev => {
-          const s  = this.getScale();
+          const s = this.getScale();
           const dx = (ev.clientX - sx) / s;
           const dy = (ev.clientY - sy) / s;
-          if (dir.includes('r')) { entry.data.w = Math.max(40, ow + dx); el.style.width  = `${entry.data.w}px`; }
-          if (dir.includes('b')) { entry.data.h = Math.max(20, oh + dy); el.style.height = `${entry.data.h}px`; }
+          if (dir.includes('r')) { data.w = Math.max(40, ow + dx); el.style.width  = `${data.w}px`; }
+          if (dir.includes('b')) { data.h = Math.max(20, oh + dy); el.style.height = `${data.h}px`; }
           this._applyStyle(id);
         };
         const onUp = () => {
-          this.onChange?.(id, { w: entry.data.w, h: entry.data.h });
+          this.onChange?.(id, { w: data.w, h: data.h });
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup',   onUp);
         };
@@ -302,12 +310,10 @@ export class TextRenderer {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
 function _rgba(hex, a) {
   if (!hex || hex.length < 7) return `rgba(255,255,255,${a})`;
-  const r = parseInt(hex.slice(1,3),16);
-  const g = parseInt(hex.slice(3,5),16);
-  const b = parseInt(hex.slice(5,7),16);
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
   return `rgba(${r},${g},${b},${a})`;
 }

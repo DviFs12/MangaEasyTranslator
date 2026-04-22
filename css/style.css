@@ -173,10 +173,10 @@ select option { background: var(--c-panel); }
 }
 #base-canvas       { z-index: 1; }
 #inpaint-canvas    { z-index: 2; }
-#selection-canvas  { z-index: 3; }
-#preview-canvas    { z-index: 4; }
-#text-layer        { z-index: 5; }
-#overlay-canvas    { z-index: 6; cursor: crosshair; }
+#overlay-canvas    { z-index: 3; pointer-events: none; }
+#selection-canvas  { z-index: 3; pointer-events: none; }
+#preview-canvas    { z-index: 4; pointer-events: none; }
+#text-layer        { z-index: 5; pointer-events: auto; }
 
 /* Drop zone */
 #drop-zone {
